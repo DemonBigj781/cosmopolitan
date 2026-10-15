@@ -46,11 +46,14 @@ cp "$ARM_ZLIB" o/third_party/zlib/.aarch64/zlib.a
   o/toolchain/dispatcher-embed.o o/toolchain/sdk-driver.o \
   o/toolchain/native-zip.o o/toolchain/machin-build.o o/toolchain/rust-build.o ${MACHIN_OBJECT:+"$MACHIN_OBJECT"} "$ZLIB_ARCHIVE"
 mkdir -p o/toolchain/compiler-payload
-python3 - "$COSMOCC_ROOT" "${RUST_APE_SOURCE:-}" "${RUST_COMPILER_ROOT:-}" <<'PY'
+python3 - "$COSMOCC_ROOT" "${RUST_APE_SOURCE:-}" "${RUST_COMPILER_ROOT:-}" "${RUST_APE_SDK_ROOT:-}" <<'PY'
 import os,sys,zipfile,hashlib
 root=os.path.realpath(sys.argv[1])
 rust_source=os.path.realpath(sys.argv[2]) if sys.argv[2] else None
 rust_compiler=os.path.realpath(sys.argv[3]) if sys.argv[3] else None
+rust_ape_sdk=os.path.realpath(sys.argv[4]) if sys.argv[4] else None
+if rust_ape_sdk and not os.path.isfile(os.path.join(rust_ape_sdk,'generated','x86_64-unknown-linux-musl.json')):
+    raise SystemExit('RUST_APE_SDK_ROOT requires generated/x86_64-unknown-linux-musl.json')
 if rust_compiler and not os.path.isfile(os.path.join(rust_compiler,'bin','rustc')):
     raise SystemExit('RUST_COMPILER_ROOT must contain bin/rustc')
 if rust_source and not os.path.isfile(os.path.join(rust_source,'run.sh')):
@@ -104,11 +107,30 @@ with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,al
                     z.write(path,arc)
                 count+=1
         print('Rust compiler SDK entries packaged:',count)
+    if rust_ape_sdk:
+        count=0
+        for directory, dirs, names in os.walk(rust_ape_sdk):
+            dirs[:] = sorted(d for d in dirs if d not in ('.git','target','build','__pycache__'))
+            for name in sorted(names):
+                path=os.path.join(directory,name)
+                arc='rust-ape-sdk/'+os.path.relpath(path,rust_ape_sdk)
+                if os.path.islink(path):
+                    import stat
+                    info=zipfile.ZipInfo(arc)
+                    info.create_system=3
+                    info.external_attr=(stat.S_IFLNK | 0o777)<<16
+                    z.writestr(info,os.readlink(path))
+                elif os.path.isfile(path):
+                    z.write(path,arc)
+                count+=1
+        print('Patched Rust-APE SDK entries packaged:',count)
 with zipfile.ZipFile(out) as z:
     assert z.testzip() is None
     assert any(os.path.basename(n)=='cosmocc' for n in z.namelist())
     if rust_source:
         assert 'rust-ape/run.sh' in z.namelist()
+    if rust_ape_sdk:
+        assert 'rust-ape-sdk/generated/x86_64-unknown-linux-musl.json' in z.namelist()
 print('payload:',out,'files:',len(files),'bytes:',os.path.getsize(out))
 PY
 # Zip payload is appended to the existing APE; the APE runtime is expected
