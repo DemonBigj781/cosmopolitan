@@ -24,6 +24,7 @@ jobs:
           chmod +x "$COSMOCC"
           COSMOCC="$COSMOCC" sh toolchain/build.sh
           ./o/toolchain/toolchain.com version
+          ./o/toolchain/toolchain.com selftest
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
@@ -35,6 +36,8 @@ jobs:
         run: |
           COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
           MACHIN=/tmp/machin-compiler COSMOCC="$COSMOCC" sh toolchain/machin-link.sh
+          ./o/toolchain/toolchain.com version
+          ./o/toolchain/toolchain.com machin-demo | grep -F "Machin linked into Cosmopolitan APE"
       - uses: actions/upload-artifact@v4
         with:
           name: unified-toolchain-bootstrap-ape
