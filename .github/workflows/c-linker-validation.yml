@@ -123,8 +123,8 @@ jobs:
           ARM_CC="$(find /tmp/cosmocc -type f -name 'aarch64-linux-cosmo-gcc' | head -n1)"
           test -n "$ARM_CC" || { echo 'ARM64 SDK compiler missing'; exit 1; }
           mkdir -p .aarch64
-          "$ARM_CC" -std=c11 -O2 -c state.c -o .aarch64/state.o
-          "$ARM_CC" -std=c11 -O2 -c callback.c -o .aarch64/callback.o
+          "$ARM_CC" -nostdinc -include "$GITHUB_WORKSPACE/libc/integral/normalize.inc" -I"$GITHUB_WORKSPACE" -std=c11 -O2 -c state.c -o .aarch64/state.o
+          "$ARM_CC" -nostdinc -include "$GITHUB_WORKSPACE/libc/integral/normalize.inc" -I"$GITHUB_WORKSPACE" -std=c11 -O2 -c callback.c -o .aarch64/callback.o
           ar rcs .aarch64/libadvanced.a .aarch64/state.o .aarch64/callback.o
           test -s .aarch64/libadvanced.a
           "$APE" cc main.o ./libadvanced.a -o advanced.com
@@ -142,7 +142,7 @@ jobs:
           EOF
           "$APE" cc -c unrelated.c -o unrelated.o
           ar rcs libunrelated.a unrelated.o
-          "$ARM_CC" -c unrelated.c -o .aarch64/unrelated.o
+          "$ARM_CC" -nostdinc -include "$GITHUB_WORKSPACE/libc/integral/normalize.inc" -I"$GITHUB_WORKSPACE" -c unrelated.c -o .aarch64/unrelated.o
           ar rcs .aarch64/libunrelated.a .aarch64/unrelated.o
           if "$APE" cc main.o ./libunrelated.a -o unresolved-archive.com >unresolved-archive.log 2>&1; then
             echo 'FAIL: unresolved archive symbols unexpectedly linked' >&2
