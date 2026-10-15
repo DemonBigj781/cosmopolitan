@@ -42,6 +42,7 @@ jobs:
           SYSROOT="$(dirname "$(dirname "$RUSTC")")"
           mkdir -p /tmp/rust-embedded/bin /tmp/rust-embedded/lib
           cp -a "$SYSROOT/bin/rustc" /tmp/rust-embedded/bin/
+          cp -a "$SYSROOT/bin/cargo" /tmp/rust-embedded/bin/
           # Include rustc's shared libraries and the host-target core/metadata libraries.
           cp -a "$SYSROOT/lib/." /tmp/rust-embedded/lib/
           /tmp/rust-embedded/bin/rustc --version
@@ -68,6 +69,7 @@ jobs:
           grep -Fx 'PASS: embedded Rust-APE source snapshot extracted' /tmp/rust-ape-status.log
           grep -Fx 'Rust compiler: packaged' /tmp/rust-ape-status.log
           "$APE" rust rustc --version
+          "$APE" rust cargo --version
           cat >/tmp/rust-embedded-smoke.rs <<'EOF'
           #![no_std]
           #[unsafe(no_mangle)]
@@ -94,6 +96,29 @@ jobs:
           printf 'Actual output: <%s>\\n' "$output"
           test "$output" = 'RUST EMBEDDED PASS: 42' || { echo 'FAIL: Rust-linked APE output mismatch' >&2; exit 1; }
           echo 'PASS: packaged rustc compiled object and Cosmopolitan linked APE'
+      - name: Validate packaged Cargo with host standard library
+        shell: bash
+        run: |
+          set -euo pipefail
+          APE="$GITHUB_WORKSPACE/o/toolchain/compiler-payload/toolchain-with-sdk.com"
+          mkdir -p /tmp/cargo-stdlib-smoke/src
+          cat > /tmp/cargo-stdlib-smoke/Cargo.toml <<'EOF'
+          [package]
+          name = "cargo_stdlib_smoke"
+          version = "0.1.0"
+          edition = "2024"
+          EOF
+          cat > /tmp/cargo-stdlib-smoke/src/main.rs <<'EOF'
+          fn main() {
+              let values = vec![6, 7];
+              let message = String::from("CARGO STD PASS");
+              println!("{}: {}", message, values[0] * values[1]);
+          }
+          EOF
+          cd /tmp/cargo-stdlib-smoke
+          "$APE" rust cargo --offline check --manifest-path Cargo.toml
+          echo 'PASS: embedded Cargo checked a host-target std project'
+          echo 'NOTE: this does not validate Cosmopolitan Rust std or APE linking'
       - name: One-command embedded Rust to Cosmopolitan APE
         shell: bash
         run: |
