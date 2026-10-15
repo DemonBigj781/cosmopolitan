@@ -54,6 +54,11 @@ jobs:
           test -s /tmp/combined-demo.c
           "$APE" cc -o /tmp/combined-demo.com /tmp/combined-demo.c
           /tmp/combined-demo.com | grep -Fx 'Machin linked into Cosmopolitan APE'
+      - name: One-command Machin to APE smoke test
+        run: |
+          APE=o/toolchain/compiler-payload/toolchain-with-sdk.com
+          "$APE" machin build toolchain/machin_demo.mfl -o /tmp/machin-one-command.com
+          /tmp/machin-one-command.com | grep -Fx 'Machin linked into Cosmopolitan APE'
       - uses: actions/upload-artifact@v4
         with:
           name: ape-with-compiler-sdk-payload-experimental
