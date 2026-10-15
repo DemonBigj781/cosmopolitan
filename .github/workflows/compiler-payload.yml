@@ -3,7 +3,7 @@ on:
   push:
     branches: [machin-cosmopolitan]
     paths:
-      - 'toolchain/package-compiler-sdk.sh'
+      - 'toolchain/**'
       - '.github/workflows/compiler-payload.yml'
   workflow_dispatch:
 jobs:
