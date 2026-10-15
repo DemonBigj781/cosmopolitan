@@ -107,7 +107,7 @@ jobs:
           int main(void) {
             int first = apply(5);
             int second = apply(30);
-            printf("ADVANCED C PASS: %d %d %d\\n", first, second, shared_counter);
+            printf("ADVANCED C PASS: %d %d %d\n", first, second, shared_counter);
             return first == 12 && second == 42 && shared_counter == 42 ? 0 : 1;
           }
           EOF
@@ -128,7 +128,9 @@ jobs:
           ar rcs .aarch64/libadvanced.a .aarch64/state.o .aarch64/callback.o
           test -s .aarch64/libadvanced.a
           "$APE" cc main.o ./libadvanced.a -o advanced.com
-          test "$(./advanced.com)" = 'ADVANCED C PASS: 12 42 42'
+          output="$(./advanced.com)" || { echo 'FAIL: advanced.com returned nonzero' >&2; exit 1; }
+          printf 'Actual output: <%s>\n' "$output"
+          test "$output" = 'ADVANCED C PASS: 12 42 42' || { echo 'FAIL: unexpected output' >&2; exit 1; }
           echo 'PASS: static archive, global data, callbacks, multiple objects'
           # A missing archive must fail, not silently create a partial APE.
           if "$APE" cc main.o ./missing-library.a -o missing-library.com >missing-library.log 2>&1; then
