@@ -1,0 +1,119 @@
+name: Advanced C++ runtime validation
+on:
+  workflow_dispatch:
+  push:
+    branches: [machin-cosmopolitan]
+    paths:
+      - 'toolchain/**'
+      - '.github/workflows/cpp-runtime-validation.yml'
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Cosmopolitan SDK
+        run: |
+          curl -fL --retry 3 https://cosmo.zip/pub/cosmocc/cosmocc.zip -o /tmp/cosmocc.zip
+          mkdir -p /tmp/cosmocc
+          unzip -q /tmp/cosmocc.zip -d /tmp/cosmocc
+      - name: Build bootstrap APE
+        run: |
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          test -n "$COSMOCC"
+          COSMOCC="$COSMOCC" sh toolchain/build.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: Prepare Machin bootstrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make
+          git clone --depth 1 https://github.com/javimosch/machin.git /tmp/machin
+          (cd /tmp/machin && go build -o /tmp/machin-compiler .)
+      - name: Package embedded SDK
+        run: |
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          COSMOCC="$COSMOCC" COSMOCC_ROOT=/tmp/cosmocc MACHIN=/tmp/machin-compiler MACHIN_SRC=/tmp/machin bash toolchain/package-compiler-sdk.sh
+      - name: Probe C++ runtime features independently
+        shell: bash
+        run: |
+          set -euo pipefail
+          APE="$GITHUB_WORKSPACE/o/toolchain/compiler-payload/toolchain-with-sdk.com"
+          mkdir -p /tmp/cpp-runtime
+          cd /tmp/cpp-runtime
+          failures=0
+          probe() {
+            local name="$1"
+            echo "::group::$name"
+            if "$APE" cc -std=c++17 "$name.cpp" -o "$name.com" >"$name.build.log" 2>&1; then
+              if "./$name.com" >"$name.run.log" 2>&1; then
+                echo "PASS: $name"
+                cat "$name.run.log"
+              else
+                echo "FAIL: $name runtime"
+                cat "$name.run.log"
+                failures=$((failures+1))
+              fi
+            else
+              echo "FAIL: $name compile/link"
+              tail -n 35 "$name.build.log"
+              failures=$((failures+1))
+            fi
+            echo "::endgroup::"
+          }
+          cat > stl.cpp <<'EOF'
+          #include <string>
+          #include <vector>
+          #include <memory>
+          #include <stdio.h>
+          int main(){std::vector<int> v{6,7};std::string s="ok";auto p=std::make_unique<int>(v[0]*v[1]);printf("STL: %d %s\\n",*p,s.c_str());return *p==42&&s=="ok"?0:1;}
+          EOF
+          probe stl
+          cat > exceptions.cpp <<'EOF'
+          #include <stdio.h>
+          int main(){try{throw 42;}catch(int n){printf("EXCEPT: %d\\n",n);return n==42?0:1;}return 2;}
+          EOF
+          probe exceptions
+          cat > rtti.cpp <<'EOF'
+          #include <typeinfo>
+          #include <stdio.h>
+          struct B{virtual ~B()=default;};struct D:B{};
+          int main(){D d;B* b=&d;bool ok=dynamic_cast<D*>(b)==&d && typeid(*b)==typeid(D);printf("RTTI: %d\\n",ok);return ok?0:1;}
+          EOF
+          probe rtti
+          cat > globals.cpp <<'EOF'
+          #include <stdio.h>
+          static int phase=0;
+          struct G{G(){phase=7;}~G(){if(phase==42)puts("GLOBAL DTOR PASS");}} g;
+          int main(){if(phase!=7)return 1;phase=42;puts("GLOBAL CTOR PASS");return 0;}
+          EOF
+          probe globals
+          echo "Runtime feature failures: $failures"
+          test "$failures" -eq 0
+      - name: Probe C++ static archive with embedded linker
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          APE="$GITHUB_WORKSPACE/o/toolchain/compiler-payload/toolchain-with-sdk.com"
+          mkdir -p /tmp/cpp-static
+          cd /tmp/cpp-static
+          cat > library.cpp <<'EOF'
+          namespace demo { int value() { return 42; } }
+          EOF
+          cat > main.cpp <<'EOF'
+          #include <stdio.h>
+          namespace demo { int value(); }
+          int main() { int n=demo::value(); printf("CPP ARCHIVE: %d\n",n); return n==42?0:1; }
+          EOF
+          "$APE" cc -std=c++17 -fno-exceptions -fno-rtti -c library.cpp -o library.o
+          "$APE" cc -std=c++17 -fno-exceptions -fno-rtti -c main.cpp -o main.o
+          ar rcs libcpp.a library.o
+          ARM_CC="$(find /tmp/cosmocc -type f -name aarch64-linux-cosmo-gcc | head -n1)"
+          test -n "$ARM_CC"
+          mkdir -p .aarch64
+          "$ARM_CC" -x c++ -nostdinc -include "$GITHUB_WORKSPACE/libc/integral/normalize.inc" -I"$GITHUB_WORKSPACE" -std=c++17 -fno-exceptions -fno-rtti -c library.cpp -o .aarch64/library.o
+          ar rcs .aarch64/libcpp.a .aarch64/library.o
+          "$APE" cc main.o ./libcpp.a -o archive.com
+          ./archive.com | grep -Fx 'CPP ARCHIVE: 42'
+          echo 'PASS: C++ static archive'
