@@ -21,6 +21,10 @@ jobs:
           COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
           test -n "$COSMOCC"
           COSMOCC="$COSMOCC" sh toolchain/build.sh
+      - name: Install Cosmopolitan build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make
       - name: Append SDK payload and verify APE still executes
         run: |
           COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
