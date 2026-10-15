@@ -1,0 +1,88 @@
+name: C++ standard library SDK audit
+on:
+  workflow_dispatch:
+  push:
+    branches: [machin-cosmopolitan]
+    paths:
+      - 'toolchain/**'
+      - '.github/workflows/cpp-stdlib-audit.yml'
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Cosmopolitan SDK
+        run: |
+          curl -fL --retry 3 https://cosmo.zip/pub/cosmocc/cosmocc.zip -o /tmp/cosmocc.zip
+          mkdir -p /tmp/cosmocc
+          unzip -q /tmp/cosmocc.zip -d /tmp/cosmocc
+      - name: Build bootstrap APE
+        run: |
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          test -n "$COSMOCC"
+          COSMOCC="$COSMOCC" sh toolchain/build.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: Prepare Machin bootstrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make
+          git clone --depth 1 https://github.com/javimosch/machin.git /tmp/machin
+          (cd /tmp/machin && go build -o /tmp/machin-compiler .)
+      - name: Package embedded SDK
+        run: |
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          COSMOCC="$COSMOCC" COSMOCC_ROOT=/tmp/cosmocc MACHIN=/tmp/machin-compiler MACHIN_SRC=/tmp/machin bash toolchain/package-compiler-sdk.sh
+      - name: Inventory SDK C++ headers, libraries and compiler drivers
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '== Candidate C++ headers =='
+          find /tmp/cosmocc -type f \( -name string -o -name vector -o -name memory -o -name typeinfo -o -name cstdio \) -print | head -80
+          echo '== Candidate C++ libraries =='
+          find /tmp/cosmocc -type f \( -name '*stdc++*' -o -name '*c++abi*' -o -name 'libc++.a' -o -name '*supc++*' \) -print | head -80
+          echo '== Compiler frontends =='
+          find /tmp/cosmocc -type f \( -name 'cosmoc++' -o -name '*g++' -o -name 'cosmocc' \) -print | head -80
+          echo '== Repository C++ support files =='
+          find third_party libc -maxdepth 5 \( -iname '*libcxx*' -o -iname '*libc++*' -o -iname '*stdc++*' \) -print | head -80 || true
+      - name: Probe packaged C++ headers and RTTI without host fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          APE="$GITHUB_WORKSPACE/o/toolchain/compiler-payload/toolchain-with-sdk.com"
+          mkdir -p /tmp/cpp-sdk-audit
+          cd /tmp/cpp-sdk-audit
+          cat > headers.cpp <<'EOF'
+          #include <string>
+          #include <vector>
+          #include <memory>
+          #include <typeinfo>
+          #include <cstdio>
+          int main() {
+            std::vector<int> v{42};
+            std::string s="ok";
+            auto p=std::make_unique<int>(v[0]);
+            std::printf("C++ STL: %d %s\n", *p, s.c_str());
+            return *p == 42 ? 0 : 1;
+          }
+          EOF
+          set +e
+          "$APE" cc -std=c++17 -c headers.cpp -o headers.o >compile.log 2>&1
+          status=$?
+          set -e
+          echo "Header compilation exit status: $status"
+          cat compile.log
+          if [ "$status" -eq 0 ]; then
+            echo 'PASS: packaged SDK locates required C++ headers'
+          else
+            echo 'GAP: packaged SDK cannot compile standard C++ headers'
+          fi
+          # Audit-only: failures here are recorded rather than hiding inventory.
+      - name: Publish SDK audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpp-stdlib-sdk-audit
+          path: /tmp/cpp-sdk-audit/compile.log
+          if-no-files-found: warn
