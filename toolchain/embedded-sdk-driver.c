@@ -121,6 +121,10 @@ int embedded_sdk_main(int argc,char **argv) {
       fputs("Cargo not packaged; set RUST_COMPILER_ROOT with bin/cargo\\n",stderr);
       return 2;
     }
+    if(is_cargo && setenv("RUSTC",rustc,1)) {
+      perror("set RUSTC");
+      return 1;
+    }
     char **rargs=calloc((size_t)argc+4,sizeof(char*));
     if (!rargs) return 1;
     int n=0;
