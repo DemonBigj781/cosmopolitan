@@ -38,6 +38,10 @@ jobs:
           MACHIN=/tmp/machin-compiler COSMOCC="$COSMOCC" sh toolchain/machin-link.sh
           ./o/toolchain/toolchain.com version
           ./o/toolchain/toolchain.com machin-demo | grep -F "Machin linked into Cosmopolitan APE"
+      - name: Link self-hosted Machin compiler into single APE
+        run: |
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          MACHIN=/tmp/machin-compiler MACHIN_SRC=/tmp/machin COSMOCC="$COSMOCC" sh toolchain/selfhost-link.sh
       - uses: actions/upload-artifact@v4
         with:
           name: unified-toolchain-bootstrap-ape
