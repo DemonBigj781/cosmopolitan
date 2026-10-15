@@ -17,11 +17,18 @@ files=[]
 for directory,_,names in os.walk(root):
     for name in names:
         path=os.path.join(directory,name)
-        if os.path.islink(path): continue
         files.append(path)
 with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,allowZip64=True) as z:
     for path in sorted(files):
-        z.write(path,os.path.relpath(path,root))
+        arc=os.path.relpath(path,root)
+        if os.path.islink(path):
+            import stat
+            info=zipfile.ZipInfo(arc)
+            info.create_system=3
+            info.external_attr=(stat.S_IFLNK | 0o777)<<16
+            z.writestr(info,os.readlink(path))
+        else:
+            z.write(path,arc)
 with zipfile.ZipFile(out) as z:
     assert z.testzip() is None
     assert any(os.path.basename(n)=='cosmocc' for n in z.namelist())
