@@ -101,15 +101,18 @@ int embedded_sdk_main(int argc,char **argv) {
       fputs("Rust-APE source snapshot missing from embedded SDK\\n",stderr);
       return 1;
     }
-    char rustc[4096],cargo[4096],sysroot[4096];
+    char rustc[4096],cargo[4096],sysroot[4096],target[4096],apelink[4096];
     if (snprintf(rustc,sizeof(rustc),"%s/rust-toolchain/bin/rustc",tmp)>=(int)sizeof(rustc) ||
         snprintf(sysroot,sizeof(sysroot),"%s/rust-toolchain",tmp)>=(int)sizeof(sysroot) ||
-        snprintf(cargo,sizeof(cargo),"%s/rust-toolchain/bin/cargo",tmp)>=(int)sizeof(cargo))
+        snprintf(cargo,sizeof(cargo),"%s/rust-toolchain/bin/cargo",tmp)>=(int)sizeof(cargo) ||
+        snprintf(target,sizeof(target),"%s/rust-ape-sdk/generated/x86_64-unknown-linux-musl.json",tmp)>=(int)sizeof(target) ||
+        snprintf(apelink,sizeof(apelink),"%s/rust-ape-sdk/vendor/cosmocc/bin/apelink",tmp)>=(int)sizeof(apelink))
       return 1;
     if (!strcmp(argv[2], "status")) {
       puts("PASS: embedded Rust-APE source snapshot extracted");
       puts(access(rustc,X_OK) ? "Rust compiler: not packaged" : "Rust compiler: packaged");
       puts(access(cargo,X_OK) ? "Cargo: not packaged" : "Cargo: packaged");
+      puts(access(target,R_OK) || access(apelink,X_OK) ? "Patched Rust-APE SDK: not packaged" : "Patched Rust-APE SDK: packaged");
       return 0;
     }
     if (access(rustc,X_OK)) {
