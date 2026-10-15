@@ -8,21 +8,18 @@ mkdir -p o/toolchain
 "$COSMOCC" -O2 -c toolchain/ape_toolchain.c -o o/toolchain/dispatcher-embed.o
 "$COSMOCC" -O2 -c toolchain/embedded-sdk-driver.c -o o/toolchain/sdk-driver.o
 "$COSMOCC" -O2 -c toolchain/native_zip.c -I. -o o/toolchain/native-zip.o
-# Compile a minimal zlib implementation with the same Cosmopolitan toolchain.
-ZLIB_SRC="adler32 crc32 inffast inflate inftrees zutil"
-ZLIB_FLAGS="-DADLER32_SIMD_SSSE3 -DCRC32_SIMD_SSE42_PCLMUL -DCRC32_SIMD_AVX512_PCLMUL -DDEFLATE_SLIDE_HASH_SSE2 -DINFLATE_CHUNK_SIMD_SSE2 -DINFLATE_CHUNK_READ_64LE"
-COSMO_X64="$(dirname "$COSMOCC")/x86_64-linux-cosmo-gcc"
-if [ ! -x "$COSMO_X64" ]; then
-  echo "Missing x86-64 Cosmopolitan compiler: $COSMO_X64" >&2
-  exit 1
+# Use Cosmopolitan's own zlib build rules instead of compiling source ad hoc.
+# The archive includes the SIMD and header configuration needed by this fork.
+COSMO_MAKE="${COSMO_MAKE:-make}"
+"$COSMO_MAKE" -j2 o//third_party/zlib/zlib.a
+ZLIB_ARCHIVE="o/third_party/zlib/zlib.a"
+if [ ! -f "$ZLIB_ARCHIVE" ]; then
+  ZLIB_ARCHIVE="o//third_party/zlib/zlib.a"
 fi
-ZLIB_OBJS=""
-for unit in $ZLIB_SRC; do
-  "$COSMO_X64" -O2 -I. $ZLIB_FLAGS -c "third_party/zlib/$unit.c" -o "o/toolchain/zlib-$unit.o"
-  ZLIB_OBJS="$ZLIB_OBJS o/toolchain/zlib-$unit.o"
-done
-# Deliberate word splitting: object file list generated from fixed source names.
-"$COSMOCC" -o o/toolchain/toolchain.com o/toolchain/dispatcher-embed.o o/toolchain/sdk-driver.o o/toolchain/native-zip.o $ZLIB_OBJS
+test -f "$ZLIB_ARCHIVE" || { echo "Cosmopolitan zlib archive missing" >&2; exit 1; }
+"$COSMOCC" -o o/toolchain/toolchain.com \
+  o/toolchain/dispatcher-embed.o o/toolchain/sdk-driver.o \
+  o/toolchain/native-zip.o "$ZLIB_ARCHIVE"
 mkdir -p o/toolchain/compiler-payload
 python3 - "$COSMOCC_ROOT" <<'PY'
 import os,sys,zipfile,hashlib
