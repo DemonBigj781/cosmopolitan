@@ -47,6 +47,18 @@ jobs:
               assert 'rust-ape/EMBEDDED.txt' in z.namelist()
               print('PASS: Rust-APE source bundled into embedded SDK')
           PY
+      - name: Verify Rust-APE snapshot via packaged APE command
+        run: |
+          set -euo pipefail
+          APE=o/toolchain/compiler-payload/toolchain-with-sdk.com
+          "$APE" rust status | tee /tmp/rust-ape-status.log
+          grep -Fx 'PASS: embedded Rust-APE source snapshot extracted' /tmp/rust-ape-status.log
+          grep -Fx 'Rust compiler execution: not yet integrated' /tmp/rust-ape-status.log
+          if "$APE" rust build sample.rs -o sample.com > /tmp/rust-build-unavailable.log 2>&1; then
+            echo 'FAIL: Rust build falsely reported success' >&2
+            exit 1
+          fi
+          echo 'PASS: unsupported Rust build correctly rejected'
       - name: Compile C using SDK packaged inside APE
         # Verify the ZIP footer is consumed by the updated C driver.
         run: |
