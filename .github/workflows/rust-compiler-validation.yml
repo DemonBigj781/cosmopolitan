@@ -84,13 +84,15 @@ jobs:
           extern int rust_multiply(int, int);
           int main(void) {
             int n=rust_multiply(6,7);
-            printf("RUST EMBEDDED PASS: %d\\n",n);
+            printf("RUST EMBEDDED PASS: %d\n",n);
             return n==42?0:1;
           }
           EOF
           "$APE" cc -c /tmp/rust-embedded-main.c -o /tmp/rust-embedded-main.o
           "$APE" cc /tmp/rust-embedded-main.o /tmp/rust-embedded-smoke.o -o /tmp/rust-embedded.com
-          /tmp/rust-embedded.com | grep -Fx 'RUST EMBEDDED PASS: 42'
+          output="$(/tmp/rust-embedded.com)" || { echo 'FAIL: Rust-linked APE exited nonzero' >&2; exit 1; }
+          printf 'Actual output: <%s>\\n' "$output"
+          test "$output" = 'RUST EMBEDDED PASS: 42' || { echo 'FAIL: Rust-linked APE output mismatch' >&2; exit 1; }
           echo 'PASS: packaged rustc compiled object and Cosmopolitan linked APE'
       - name: Compile C using SDK packaged inside APE
         # Verify the ZIP footer is consumed by the updated C driver.
