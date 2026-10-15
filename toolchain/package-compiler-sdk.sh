@@ -45,9 +45,12 @@ cp "$ARM_ZLIB" o/third_party/zlib/.aarch64/zlib.a
   o/toolchain/dispatcher-embed.o o/toolchain/sdk-driver.o \
   o/toolchain/native-zip.o o/toolchain/machin-build.o ${MACHIN_OBJECT:+"$MACHIN_OBJECT"} "$ZLIB_ARCHIVE"
 mkdir -p o/toolchain/compiler-payload
-python3 - "$COSMOCC_ROOT" <<'PY'
+python3 - "$COSMOCC_ROOT" "${RUST_APE_SOURCE:-}" <<'PY'
 import os,sys,zipfile,hashlib
 root=os.path.realpath(sys.argv[1])
+rust_source=os.path.realpath(sys.argv[2]) if sys.argv[2] else None
+if rust_source and not os.path.isfile(os.path.join(rust_source,'run.sh')):
+    raise SystemExit('RUST_APE_SOURCE must point to third_party/rust_ape')
 out='o/toolchain/compiler-payload/cosmocc-sdk.zip'
 files=[]
 for directory,_,names in os.walk(root):
@@ -65,9 +68,26 @@ with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,al
             z.writestr(info,os.readlink(path))
         else:
             z.write(path,arc)
+    if rust_source:
+        rust_count=0
+        for directory, dirs, names in os.walk(rust_source):
+            dirs[:] = sorted(d for d in dirs if d not in ('.git', 'target', 'o', '__pycache__'))
+            for name in sorted(names):
+                path=os.path.join(directory,name)
+                if not os.path.isfile(path) or os.path.islink(path):
+                    continue
+                arc='rust-ape/'+os.path.relpath(path,rust_source)
+                z.write(path,arc)
+                rust_count+=1
+        if not rust_count:
+            raise SystemExit('Rust-APE source directory is empty')
+        z.writestr('rust-ape/EMBEDDED.txt','Rust-APE source snapshot; bootstrap still requires external host prerequisites.\\n')
+        print('Rust-APE source files packaged:',rust_count)
 with zipfile.ZipFile(out) as z:
     assert z.testzip() is None
     assert any(os.path.basename(n)=='cosmocc' for n in z.namelist())
+    if rust_source:
+        assert 'rust-ape/run.sh' in z.namelist()
 print('payload:',out,'files:',len(files),'bytes:',os.path.getsize(out))
 PY
 # Zip payload is appended to the existing APE; the APE runtime is expected
