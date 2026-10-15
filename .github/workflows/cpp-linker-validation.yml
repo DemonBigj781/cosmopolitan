@@ -66,12 +66,12 @@ jobs:
           EOF
           cat > main.cpp <<'EOF'
           #include "lib.hpp"
-          #include <cstdio>
+          #include <stdio.h>
           int main() {
             Derived d{6};
             const Base& b = d;
             const int result = c_multiply(b.value(), 7);
-            std::printf("CPP LINK PASS: %d\n", result);
+            printf("CPP LINK PASS: %d\n", result);
             return result == 42 ? 0 : 1;
           }
           EOF
