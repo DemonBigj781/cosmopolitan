@@ -1,0 +1,108 @@
+name: C++ compiler and linker validation
+on:
+  workflow_dispatch:
+  push:
+    branches: [machin-cosmopolitan]
+    paths:
+      - 'toolchain/**'
+      - '.github/workflows/cpp-linker-validation.yml'
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Cosmopolitan SDK
+        run: |
+          curl -fL --retry 3 https://cosmo.zip/pub/cosmocc/cosmocc.zip -o /tmp/cosmocc.zip
+          mkdir -p /tmp/cosmocc
+          unzip -q /tmp/cosmocc.zip -d /tmp/cosmocc
+      - name: Build bootstrap APE
+        run: |
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          test -n "$COSMOCC"
+          COSMOCC="$COSMOCC" sh toolchain/build.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: Prepare Machin bootstrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make
+          git clone --depth 1 https://github.com/javimosch/machin.git /tmp/machin
+          (cd /tmp/machin && go build -o /tmp/machin-compiler .)
+      - name: Package embedded SDK
+        run: |
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          COSMOCC="$COSMOCC" COSMOCC_ROOT=/tmp/cosmocc MACHIN=/tmp/machin-compiler MACHIN_SRC=/tmp/machin bash toolchain/package-compiler-sdk.sh
+      - name: Validate C++17 compilation and cross-object linking
+        shell: bash
+        run: |
+          set -euo pipefail
+          APE="$GITHUB_WORKSPACE/o/toolchain/compiler-payload/toolchain-with-sdk.com"
+          mkdir -p /tmp/cpp-validation
+          cd /tmp/cpp-validation
+          cat > lib.hpp <<'EOF'
+          #pragma once
+          struct Base {
+            virtual int value() const = 0;
+            virtual ~Base() = default;
+          };
+          struct Derived final : Base {
+            explicit Derived(int n);
+            ~Derived() override;
+            int value() const override;
+            int n_;
+          };
+          extern "C" int c_multiply(int, int);
+          EOF
+          cat > lib.cpp <<'EOF'
+          #include "lib.hpp"
+          Derived::Derived(int n) : n_(n) {}
+          Derived::~Derived() = default;
+          int Derived::value() const { return n_; }
+          EOF
+          cat > multiply.c <<'EOF'
+          int c_multiply(int a, int b) { return a * b; }
+          EOF
+          cat > main.cpp <<'EOF'
+          #include "lib.hpp"
+          #include <cstdio>
+          int main() {
+            Derived d{6};
+            const Base& b = d;
+            const int result = c_multiply(b.value(), 7);
+            std::printf("CPP LINK PASS: %d\n", result);
+            return result == 42 ? 0 : 1;
+          }
+          EOF
+          "$APE" cc -std=c++17 -fno-exceptions -fno-rtti -c lib.cpp -o lib.o
+          "$APE" cc -std=c++17 -fno-exceptions -fno-rtti -c main.cpp -o main.o
+          "$APE" cc -std=c11 -c multiply.c -o multiply.o
+          test -s lib.o && test -s main.o && test -s multiply.o
+          "$APE" cc main.o lib.o multiply.o -o cpp-test.com
+          output="$(./cpp-test.com)" || { echo 'FAIL: C++ executable exited nonzero' >&2; exit 1; }
+          printf 'Actual output: <%s>\n' "$output"
+          test "$output" = 'CPP LINK PASS: 42'
+          echo 'PASS: C++17, separate objects, virtual dispatch, constructors/destructors, C ABI'
+      - name: Validate C++ compilation and linker failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          APE="$GITHUB_WORKSPACE/o/toolchain/compiler-payload/toolchain-with-sdk.com"
+          cd /tmp/cpp-validation
+          cat > invalid.cpp <<'EOF'
+          int main() { this is invalid C++; }
+          EOF
+          if "$APE" cc -std=c++17 -c invalid.cpp -o invalid.o >invalid.log 2>&1; then
+            echo 'FAIL: invalid C++ unexpectedly compiled' >&2
+            exit 1
+          fi
+          cat > missing.cpp <<'EOF'
+          extern int missing_cpp_function();
+          int main() { return missing_cpp_function(); }
+          EOF
+          if "$APE" cc -std=c++17 missing.cpp -o missing.com >missing.log 2>&1; then
+            echo 'FAIL: missing C++ symbol unexpectedly linked' >&2
+            exit 1
+          fi
+          echo 'PASS: C++ compiler and linker reject invalid inputs'
