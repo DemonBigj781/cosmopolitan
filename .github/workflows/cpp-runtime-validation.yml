@@ -34,7 +34,7 @@ jobs:
         run: |
           COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
           COSMOCC="$COSMOCC" COSMOCC_ROOT=/tmp/cosmocc MACHIN=/tmp/machin-compiler MACHIN_SRC=/tmp/machin bash toolchain/package-compiler-sdk.sh
-      - name: Probe C++ runtime features independently
+      - name: Validate C++ runtime through packaged c++ command
         shell: bash
         run: |
           set -euo pipefail
@@ -45,7 +45,7 @@ jobs:
           probe() {
             local name="$1"
             echo "::group::$name"
-            if "$APE" cc -std=c++17 "$name.cpp" -o "$name.com" >"$name.build.log" 2>&1; then
+            if "$APE" c++ -std=c++17 "$name.cpp" -o "$name.com" >"$name.build.log" 2>&1; then
               if "./$name.com" >"$name.run.log" 2>&1; then
                 echo "PASS: $name"
                 cat "$name.run.log"
@@ -66,19 +66,19 @@ jobs:
           #include <vector>
           #include <memory>
           #include <stdio.h>
-          int main(){std::vector<int> v{6,7};std::string s="ok";auto p=std::make_unique<int>(v[0]*v[1]);printf("STL: %d %s\\n",*p,s.c_str());return *p==42&&s=="ok"?0:1;}
+          int main(){std::vector<int> v{6,7};std::string s="ok";auto p=std::make_unique<int>(v[0]*v[1]);printf("STL: %d %s\n",*p,s.c_str());return *p==42&&s=="ok"?0:1;}
           EOF
           probe stl
           cat > exceptions.cpp <<'EOF'
           #include <stdio.h>
-          int main(){try{throw 42;}catch(int n){printf("EXCEPT: %d\\n",n);return n==42?0:1;}return 2;}
+          int main(){try{throw 42;}catch(int n){printf("EXCEPT: %d\n",n);return n==42?0:1;}return 2;}
           EOF
           probe exceptions
           cat > rtti.cpp <<'EOF'
           #include <typeinfo>
           #include <stdio.h>
           struct B{virtual ~B()=default;};struct D:B{};
-          int main(){D d;B* b=&d;bool ok=dynamic_cast<D*>(b)==&d && typeid(*b)==typeid(D);printf("RTTI: %d\\n",ok);return ok?0:1;}
+          int main(){D d;B* b=&d;bool ok=dynamic_cast<D*>(b)==&d && typeid(*b)==typeid(D);printf("RTTI: %d\n",ok);return ok?0:1;}
           EOF
           probe rtti
           cat > globals.cpp <<'EOF'
@@ -106,14 +106,14 @@ jobs:
           namespace demo { int value(); }
           int main() { int n=demo::value(); printf("CPP ARCHIVE: %d\n",n); return n==42?0:1; }
           EOF
-          "$APE" cc -std=c++17 -fno-exceptions -fno-rtti -c library.cpp -o library.o
-          "$APE" cc -std=c++17 -fno-exceptions -fno-rtti -c main.cpp -o main.o
+          "$APE" c++ -std=c++17 -fno-exceptions -fno-rtti -c library.cpp -o library.o
+          "$APE" c++ -std=c++17 -fno-exceptions -fno-rtti -c main.cpp -o main.o
           ar rcs libcpp.a library.o
           ARM_CC="$(find /tmp/cosmocc -type f -name aarch64-linux-cosmo-gcc | head -n1)"
           test -n "$ARM_CC"
           mkdir -p .aarch64
           "$ARM_CC" -x c++ -nostdinc -include "$GITHUB_WORKSPACE/libc/integral/normalize.inc" -I"$GITHUB_WORKSPACE" -std=c++17 -fno-exceptions -fno-rtti -c library.cpp -o .aarch64/library.o
           ar rcs .aarch64/libcpp.a .aarch64/library.o
-          "$APE" cc main.o ./libcpp.a -o archive.com
+          "$APE" c++ main.o ./libcpp.a -o archive.com
           ./archive.com | grep -Fx 'CPP ARCHIVE: 42'
           echo 'PASS: C++ static archive'
