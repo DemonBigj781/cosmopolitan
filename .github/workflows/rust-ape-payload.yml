@@ -1,0 +1,76 @@
+name: Rust-APE embedded source payload validation
+on:
+  push:
+    branches: [machin-cosmopolitan]
+    paths:
+      - 'toolchain/**'
+      - '.github/workflows/rust-ape-payload.yml'
+  workflow_dispatch:
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Cosmopolitan SDK
+        run: |
+          curl -fL --retry 3 https://cosmo.zip/pub/cosmocc/cosmocc.zip -o /tmp/cosmocc.zip
+          mkdir -p /tmp/cosmocc
+          unzip -q /tmp/cosmocc.zip -d /tmp/cosmocc
+      - name: Build bootstrap APE
+        run: |
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          test -n "$COSMOCC"
+          COSMOCC="$COSMOCC" sh toolchain/build.sh
+      - name: Install Cosmopolitan build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: Build Machin bootstrap compiler
+        run: |
+          git clone --depth 1 https://github.com/javimosch/machin.git /tmp/machin
+          (cd /tmp/machin && go build -o /tmp/machin-compiler .)
+      - name: Append SDK payload and verify APE still executes
+        run: |
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          COSMOCC="$COSMOCC" COSMOCC_ROOT=/tmp/cosmocc RUST_APE_SOURCE=third_party/rust_ape MACHIN=/tmp/machin-compiler MACHIN_SRC=/tmp/machin bash toolchain/package-compiler-sdk.sh
+      - name: Verify Rust-APE source is embedded in SDK payload
+        run: |
+          python3 - <<'PY'
+          import zipfile
+          path='o/toolchain/compiler-payload/cosmocc-sdk.zip'
+          with zipfile.ZipFile(path) as z:
+              assert z.testzip() is None
+              assert 'rust-ape/run.sh' in z.namelist()
+              assert 'rust-ape/EMBEDDED.txt' in z.namelist()
+              print('PASS: Rust-APE source bundled into embedded SDK')
+          PY
+      - name: Compile C using SDK packaged inside APE
+        # Verify the ZIP footer is consumed by the updated C driver.
+        run: |
+          printf '#include <stdio.h>\nint main(void){puts("embedded compiler PASS");return 0;}\n' > /tmp/embedded-test.c
+          # Block Python explicitly without hiding compiler dependencies.
+          mkdir -p /tmp/ape-runtime-bin
+          printf '#!/bin/sh\necho "ERROR: Python invoked" >&2\nexit 97\n' > /tmp/ape-runtime-bin/python3
+          cp /tmp/ape-runtime-bin/python3 /tmp/ape-runtime-bin/python
+          chmod +x /tmp/ape-runtime-bin/python*
+          PATH="/tmp/ape-runtime-bin:$PATH" o/toolchain/compiler-payload/toolchain-with-sdk.com cc -o /tmp/embedded-test.com /tmp/embedded-test.c
+          /tmp/embedded-test.com | grep -Fx 'embedded compiler PASS'
+      - name: Verify both compilers in one APE
+        run: |
+          APE=o/toolchain/compiler-payload/toolchain-with-sdk.com
+          "$APE" machin-compiler --full toolchain/machin_demo.mfl > /tmp/combined-demo.c
+          test -s /tmp/combined-demo.c
+          "$APE" cc -o /tmp/combined-demo.com /tmp/combined-demo.c
+          /tmp/combined-demo.com | grep -Fx 'Machin linked into Cosmopolitan APE'
+      - name: One-command Machin to APE smoke test
+        run: |
+          APE=o/toolchain/compiler-payload/toolchain-with-sdk.com
+          "$APE" machin build toolchain/machin_demo.mfl -o /tmp/machin-one-command.com
+          /tmp/machin-one-command.com | grep -Fx 'Machin linked into Cosmopolitan APE'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ape-with-compiler-sdk-payload-experimental
+          path: o/toolchain/compiler-payload/toolchain-with-sdk.com
