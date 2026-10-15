@@ -17,12 +17,16 @@ if [ ! -f "$ZLIB_ARCHIVE" ]; then
   ZLIB_ARCHIVE="o//third_party/zlib/zlib.a"
 fi
 test -f "$ZLIB_ARCHIVE" || { echo "Cosmopolitan zlib archive missing" >&2; exit 1; }
-# Use the SDK's configured C driver, but pass the library through
-# the linker as an exact filename to avoid cosmocc multi-arch archive pairing.
+# Build an ARM64 companion archive using Cosmopolitan's own Make rules.
+# The multiarch cosmocc wrapper requires matching x86-64 and ARM64 archives.
+"$COSMO_MAKE" -j2 MODE=aarch64 o/aarch64/third_party/zlib/zlib.a
+ARM_ZLIB="o/aarch64/third_party/zlib/zlib.a"
+test -f "$ARM_ZLIB" || { echo "ARM64 zlib archive missing" >&2; exit 1; }
+mkdir -p o/third_party/zlib/.aarch64
+cp "$ARM_ZLIB" o/third_party/zlib/.aarch64/zlib.a
 "$COSMOCC" -O2 -o o/toolchain/toolchain.com \
   o/toolchain/dispatcher-embed.o o/toolchain/sdk-driver.o \
-  o/toolchain/native-zip.o -Wl,--whole-archive \
-  -Wl,"$ZLIB_ARCHIVE" -Wl,--no-whole-archive
+  o/toolchain/native-zip.o "$ZLIB_ARCHIVE"
 mkdir -p o/toolchain/compiler-payload
 python3 - "$COSMOCC_ROOT" <<'PY'
 import os,sys,zipfile,hashlib
