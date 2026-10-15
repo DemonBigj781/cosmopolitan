@@ -53,7 +53,7 @@ jobs:
           APE=o/toolchain/compiler-payload/toolchain-with-sdk.com
           "$APE" rust status | tee /tmp/rust-ape-status.log
           grep -Fx 'PASS: embedded Rust-APE source snapshot extracted' /tmp/rust-ape-status.log
-          grep -Fx 'Rust compiler execution: not yet integrated' /tmp/rust-ape-status.log
+          grep -Fx 'Rust compiler: not packaged' /tmp/rust-ape-status.log
           if "$APE" rust build sample.rs -o sample.com > /tmp/rust-build-unavailable.log 2>&1; then
             echo 'FAIL: Rust build falsely reported success' >&2
             exit 1
