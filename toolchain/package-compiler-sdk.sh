@@ -3,7 +3,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${COSMOCC_ROOT:?Set COSMOCC_ROOT to extracted cosmocc SDK root}"
-test -f o/toolchain/toolchain.com
+: "${COSMOCC:?Set COSMOCC to compiler binary}"
+mkdir -p o/toolchain
+"$COSMOCC" -O2 -c toolchain/ape_toolchain.c -o o/toolchain/dispatcher-embed.o
+"$COSMOCC" -O2 -c toolchain/embedded-sdk-driver.c -o o/toolchain/sdk-driver.o
+"$COSMOCC" -o o/toolchain/toolchain.com o/toolchain/dispatcher-embed.o o/toolchain/sdk-driver.o
 mkdir -p o/toolchain/compiler-payload
 python3 - "$COSMOCC_ROOT" <<'PY'
 import os,sys,zipfile,hashlib
