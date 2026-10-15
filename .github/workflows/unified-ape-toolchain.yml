@@ -42,7 +42,14 @@ jobs:
         run: |
           COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
           MACHIN=/tmp/machin-compiler MACHIN_SRC=/tmp/machin COSMOCC="$COSMOCC" sh toolchain/selfhost-link.sh
+      - name: Roundtrip - embedded Machin generates a second APE
+        run: |
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          COSMOCC="$COSMOCC" sh toolchain/roundtrip-ape.sh
       - uses: actions/upload-artifact@v4
         with:
           name: unified-toolchain-bootstrap-ape
-          path: o/toolchain/toolchain.com
+          path: |
+            o/toolchain/toolchain.com
+            o/toolchain/roundtrip/generated.com
+            o/toolchain/roundtrip/output.txt
