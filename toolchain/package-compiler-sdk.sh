@@ -8,6 +8,22 @@ mkdir -p o/toolchain
 "$COSMOCC" -O2 -c toolchain/ape_toolchain.c -o o/toolchain/dispatcher-embed.o
 "$COSMOCC" -O2 -c toolchain/embedded-sdk-driver.c -o o/toolchain/sdk-driver.o
 "$COSMOCC" -O2 -c toolchain/native_zip.c -I. -o o/toolchain/native-zip.o
+# Optional self-hosted Machin compiler linked into the SAME APE.
+if [[ -n "${MACHIN:-}" && -n "${MACHIN_SRC:-}" ]]; then
+  sources=(selfhost/lex.src selfhost/parse.src selfhost/check.src
+    selfhost/checkgen.src selfhost/cgen.src selfhost/cgbuiltin.src
+    selfhost/alias.src selfhost/cgagg.src selfhost/cgffi.src
+    selfhost/cgprelude.src selfhost/cgprog.src selfhost/compile.src
+    selfhost/cgmain.src)
+  (cd "$MACHIN_SRC" && "$MACHIN" encode "${sources[@]}") > o/toolchain/compiler.mfl
+  test -s o/toolchain/compiler.mfl
+  "$MACHIN" build o/toolchain/compiler.mfl --emit-c > o/toolchain/compiler.c
+  test -s o/toolchain/compiler.c
+  "$COSMOCC" -O2 -std=c11 -pthread -Dmain=machin_entry -c o/toolchain/compiler.c -o o/toolchain/compiler.o
+  MACHIN_OBJECT=o/toolchain/compiler.o
+else
+  MACHIN_OBJECT=""
+fi
 # Use Cosmopolitan's own zlib build rules instead of compiling source ad hoc.
 # The archive includes the SIMD and header configuration needed by this fork.
 COSMO_MAKE="${COSMO_MAKE:-make}"
@@ -26,7 +42,7 @@ mkdir -p o/third_party/zlib/.aarch64
 cp "$ARM_ZLIB" o/third_party/zlib/.aarch64/zlib.a
 "$COSMOCC" -O2 -o o/toolchain/toolchain.com \
   o/toolchain/dispatcher-embed.o o/toolchain/sdk-driver.o \
-  o/toolchain/native-zip.o "$ZLIB_ARCHIVE"
+  o/toolchain/native-zip.o ${MACHIN_OBJECT:+"$MACHIN_OBJECT"} "$ZLIB_ARCHIVE"
 mkdir -p o/toolchain/compiler-payload
 python3 - "$COSMOCC_ROOT" <<'PY'
 import os,sys,zipfile,hashlib
@@ -81,4 +97,10 @@ with zipfile.ZipFile(archive) as z:
 print('PASS: standalone SDK archive and APE payload footer validated')
 PY
 o/toolchain/compiler-payload/toolchain-with-sdk.com selftest
+if [[ -n "$MACHIN_OBJECT" ]]; then
+  o/toolchain/compiler-payload/toolchain-with-sdk.com machin-compiler --full toolchain/machin_demo.mfl > o/toolchain/combined-machin-demo.c
+  test -s o/toolchain/combined-machin-demo.c
+  grep -q 'main' o/toolchain/combined-machin-demo.c
+  echo 'PASS: self-hosted Machin and compiler SDK share one APE'
+fi
 echo 'NOTE: compiler payload is packaged, not executable through an internal compiler driver.'
