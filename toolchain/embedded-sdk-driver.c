@@ -91,10 +91,34 @@ int embedded_sdk_main(int argc,char **argv) {
   if(!find_cc(tmp,compiler,sizeof(compiler),0)) {
     fputs("No cosmocc compiler found in embedded SDK\n",stderr); return 1;
   }
-  char **args=calloc((size_t)argc+1,sizeof(char*));
+  int is_cpp = !strcmp(argv[1], "c++");
+  int compile_only = 0;
+  for (int i=2;i<argc;i++)
+    if (!strcmp(argv[i], "-c") || !strcmp(argv[i], "-E") || !strcmp(argv[i], "-S"))
+      compile_only = 1;
+  char headers[4096];
+  if (snprintf(headers,sizeof(headers),"%s/include/third_party/libcxx",tmp)>=(int)sizeof(headers))
+    return 1;
+  if (is_cpp && access(headers,R_OK)) {
+    fprintf(stderr,"C++ headers not found: %s\\n",headers);
+    return 1;
+  }
+  char **args=calloc((size_t)argc+6,sizeof(char*));
   if(!args) return 1;
-  args[0]=compiler;
-  for(int i=2;i<argc;i++) args[i-1]=argv[i];
+  int n=0;
+  args[n++]=compiler;
+  if(is_cpp) {
+    args[n++]="-x";
+    args[n++]="c++";
+    /* -x applies to every subsequent input: reset it before objects/libraries.
+       Use the extension-based language selection instead. */
+    n-=2;
+    args[n++]="-I";
+    args[n++]=headers;
+  }
+  for(int i=2;i<argc;i++) args[n++]=argv[i];
+  if(is_cpp && !compile_only) args[n++]="-lstdc++";
+  args[n]=NULL;
   rc=run(args);
   free(args);
   /* Temporary SDK directory retained for diagnostics and compiler subprocesses. */
