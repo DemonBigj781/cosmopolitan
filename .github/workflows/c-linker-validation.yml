@@ -78,3 +78,65 @@ jobs:
           fi
           echo 'PASS: invalid C correctly rejected'
           echo 'ALL C COMPILER/LINKER CHECKS PASSED'
+
+      - name: Advanced C object and static archive linking
+        shell: bash
+        run: |
+          set -euo pipefail
+          APE="$GITHUB_WORKSPACE/o/toolchain/compiler-payload/toolchain-with-sdk.com"
+          mkdir -p /tmp/c-linker-advanced
+          cd /tmp/c-linker-advanced
+          cat > state.c <<'EOF'
+          int shared_counter = 7;
+          int bump(int amount) {
+            shared_counter += amount;
+            return shared_counter;
+          }
+          EOF
+          cat > callback.c <<'EOF'
+          extern int bump(int);
+          int invoke(int (*callback)(int), int x) {
+            return callback(x);
+          }
+          int apply(int x) { return invoke(bump, x); }
+          EOF
+          cat > main.c <<'EOF'
+          #include <stdio.h>
+          extern int shared_counter;
+          extern int apply(int);
+          int main(void) {
+            int first = apply(5);
+            int second = apply(30);
+            printf("ADVANCED C PASS: %d %d %d\\n", first, second, shared_counter);
+            return first == 12 && second == 42 && shared_counter == 42 ? 0 : 1;
+          }
+          EOF
+          "$APE" cc -std=c11 -O2 -c state.c -o state.o
+          "$APE" cc -std=c11 -O2 -c callback.c -o callback.o
+          "$APE" cc -std=c11 -O2 -c main.c -o main.o
+          test -s state.o && test -s callback.o && test -s main.o
+          # Archive construction uses the CI host archiver; object generation
+          # and final executable linking MUST use the embedded compiler.
+          ar rcs libadvanced.a state.o callback.o
+          test -s libadvanced.a
+          "$APE" cc main.o ./libadvanced.a -o advanced.com
+          test "$(./advanced.com)" = 'ADVANCED C PASS: 12 42 42'
+          echo 'PASS: static archive, global data, callbacks, multiple objects'
+          # A missing archive must fail, not silently create a partial APE.
+          if "$APE" cc main.o ./missing-library.a -o missing-library.com >missing-library.log 2>&1; then
+            echo 'FAIL: missing archive unexpectedly linked' >&2
+            exit 1
+          fi
+          echo 'PASS: missing archive correctly rejected'
+          # An archive with no matching symbols must also fail.
+          cat > unrelated.c <<'EOF'
+          int unrelated(void) { return 1; }
+          EOF
+          "$APE" cc -c unrelated.c -o unrelated.o
+          ar rcs libunrelated.a unrelated.o
+          if "$APE" cc main.o ./libunrelated.a -o unresolved-archive.com >unresolved-archive.log 2>&1; then
+            echo 'FAIL: unresolved archive symbols unexpectedly linked' >&2
+            exit 1
+          fi
+          echo 'PASS: archive symbol resolution failures correctly rejected'
+          echo 'ALL ADVANCED C LINKER CHECKS PASSED'
