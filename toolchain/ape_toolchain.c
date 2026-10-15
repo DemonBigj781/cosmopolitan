@@ -1,10 +1,13 @@
 #include <stdio.h>
 #include <string.h>
 
+extern int machin_entry(int argc, char **argv) __attribute__((weak));
+
 static void usage(const char *name) {
   printf("Cosmopolitan unified APE toolchain (bootstrap)\n");
   printf("Usage: %s <command>\n", name);
   puts("Commands:");
+  puts("  machin-demo  Run statically linked Machin sample (when available)");
   puts("  version       Show bootstrap version");
   puts("  selftest      Verify command dispatch");
   puts("  machin        Reserved for Machin compiler integration");
@@ -17,6 +20,10 @@ int main(int argc, char **argv) {
   if (argc < 2 || !strcmp(argv[1], "--help") || !strcmp(argv[1], "help")) {
     usage(argv[0]);
     return 0;
+  }
+  if (!strcmp(argv[1], "machin-demo")) {
+    if (!machin_entry) { fputs("Machin module not linked\\n", stderr); return 2; }
+    return machin_entry(argc - 1, argv + 1);
   }
   if (!strcmp(argv[1], "version")) {
     puts("ape-toolchain bootstrap 0.1");
