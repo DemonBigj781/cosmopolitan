@@ -94,6 +94,24 @@ jobs:
           printf 'Actual output: <%s>\\n' "$output"
           test "$output" = 'RUST EMBEDDED PASS: 42' || { echo 'FAIL: Rust-linked APE output mismatch' >&2; exit 1; }
           echo 'PASS: packaged rustc compiled object and Cosmopolitan linked APE'
+      - name: One-command embedded Rust to Cosmopolitan APE
+        shell: bash
+        run: |
+          set -euo pipefail
+          APE="$GITHUB_WORKSPACE/o/toolchain/compiler-payload/toolchain-with-sdk.com"
+          cat > /tmp/rust-one-command.rs <<'EOF'
+          #![no_std]
+          unsafe extern "C" { fn puts(s: *const i8) -> i32; }
+          #[unsafe(no_mangle)]
+          pub extern "C" fn rust_main() -> i32 {
+              unsafe { puts(b"RUST ONE COMMAND PASS\\0".as_ptr().cast()); }
+              0
+          }
+          EOF
+          "$APE" rust build /tmp/rust-one-command.rs -o /tmp/rust-one-command.com
+          test -s /tmp/rust-one-command.com
+          /tmp/rust-one-command.com | grep -Fx 'RUST ONE COMMAND PASS'
+          echo 'PASS: one-command Rust to APE'
       - name: Compile C using SDK packaged inside APE
         # Verify the ZIP footer is consumed by the updated C driver.
         run: |
