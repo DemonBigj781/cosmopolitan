@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 mkdir -p o/toolchain
 "$COSMOCC" -O2 -c toolchain/ape_toolchain.c -o o/toolchain/dispatcher-embed.o
 "$COSMOCC" -O2 -c toolchain/embedded-sdk-driver.c -o o/toolchain/sdk-driver.o
-"$COSMOCC" -O2 -c toolchain/native_zip.c -o o/toolchain/native-zip.o
+"$COSMOCC" -O2 -c toolchain/native_zip.c -I. -o o/toolchain/native-zip.o
 "$COSMOCC" -o o/toolchain/toolchain.com o/toolchain/dispatcher-embed.o o/toolchain/sdk-driver.o o/toolchain/native-zip.o -lz
 mkdir -p o/toolchain/compiler-payload
 python3 - "$COSMOCC_ROOT" <<'PY'
