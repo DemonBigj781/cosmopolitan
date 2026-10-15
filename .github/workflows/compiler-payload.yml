@@ -23,7 +23,13 @@ jobs:
           COSMOCC="$COSMOCC" sh toolchain/build.sh
       - name: Append SDK payload and verify APE still executes
         run: |
-          COSMOCC_ROOT=/tmp/cosmocc bash toolchain/package-compiler-sdk.sh
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          COSMOCC="$COSMOCC" COSMOCC_ROOT=/tmp/cosmocc bash toolchain/package-compiler-sdk.sh
+      - name: Compile C using SDK packaged inside APE
+        run: |
+          printf '#include <stdio.h>\nint main(void){puts("embedded compiler PASS");return 0;}\n' > /tmp/embedded-test.c
+          o/toolchain/compiler-payload/toolchain-with-sdk.com cc -o /tmp/embedded-test.com /tmp/embedded-test.c
+          /tmp/embedded-test.com | grep -Fx 'embedded compiler PASS'
       - uses: actions/upload-artifact@v4
         with:
           name: ape-with-compiler-sdk-payload-experimental
