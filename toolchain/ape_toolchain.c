@@ -1,12 +1,14 @@
 #include <stdio.h>
 #include <string.h>
 
+extern int embedded_sdk_main(int argc, char **argv) __attribute__((weak));
 extern int machin_entry(int argc, char **argv) __attribute__((weak));
 
 static void usage(const char *name) {
   printf("Cosmopolitan unified APE toolchain (bootstrap)\n");
   printf("Usage: %s <command>\n", name);
   puts("Commands:");
+  puts("  cc           Run packaged Cosmopolitan compiler (experimental)");
   puts("  machin-compiler  Run linked self-hosted Machin compiler");
   puts("  machin-demo  Run statically linked Machin sample (when available)");
   puts("  version       Show bootstrap version");
@@ -25,6 +27,10 @@ int main(int argc, char **argv) {
   if (!strcmp(argv[1], "machin-demo") || !strcmp(argv[1], "machin-compiler")) {
     if (!machin_entry) { fputs("Machin module not linked\\n", stderr); return 2; }
     return machin_entry(argc - 1, argv + 1);
+  }
+  if (!strcmp(argv[1], "cc")) {
+    if (!embedded_sdk_main) { fputs("Embedded SDK driver not linked\\n", stderr); return 2; }
+    return embedded_sdk_main(argc, argv);
   }
   if (!strcmp(argv[1], "version")) {
     puts("ape-toolchain bootstrap 0.1");
