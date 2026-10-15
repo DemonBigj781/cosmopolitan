@@ -1,4 +1,4 @@
-/* Experimental SDK launcher. Requires host python3 for ZIP extraction.
+/* Experimental SDK launcher. Uses host unzip for ZIP extraction; no Python required.
  * Not yet a dependency-free or in-process compiler. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,29 +43,9 @@ int embedded_sdk_main(int argc,char **argv) {
   char self[4096],tmp[]="/tmp/cosmo-sdk-XXXXXX",compiler[4096];
   if(!realpath(argv[0],self)) { perror("resolve executable"); return 1; }
   if(!mkdtemp(tmp)) { perror("mkdtemp"); return 1; }
-  const char *script=
-    "import sys,zipfile,os,stat,pathlib\\n"
-    "root=pathlib.Path(sys.argv[2]).resolve()\\n"
-    "with zipfile.ZipFile(sys.argv[1]) as z:\\n"
-    " for i in z.infolist():\\n"
-    "  name=i.filename\\n"
-    "  p=(root/name).resolve(strict=False)\\n"
-    "  if not p.is_relative_to(root): raise ValueError('unsafe path: '+name)\\n"
-    "  mode=i.external_attr>>16\\n"
-    "  if stat.S_ISLNK(mode):\\n"
-    "   target=z.read(i).decode()\\n"
-    "   if os.path.isabs(target): raise ValueError('absolute symlink')\\n"
-    "   dest=(p.parent/target).resolve(strict=False)\\n"
-    "   if not dest.is_relative_to(root): raise ValueError('escaping symlink')\\n"
-    "   p.parent.mkdir(parents=True,exist_ok=True)\\n"
-    "   p.symlink_to(target)\\n"
-    "  elif i.is_dir(): p.mkdir(parents=True,exist_ok=True)\\n"
-    "  else:\\n"
-    "   p.parent.mkdir(parents=True,exist_ok=True)\\n"
-    "   with z.open(i) as src,open(p,'wb') as dst:\\n"
-    "    import shutil; shutil.copyfileobj(src,dst)\\n"
-    "   os.chmod(p,stat.S_IMODE(mode) or 0o644)\\n";
-  char *extract[]={"python3","-c",(char*)script,self,tmp,NULL};
+  /* Transitional Python-free extraction using host unzip.
+   * Next step: replace with Cosmopolitan's in-process ZIP reader. */
+  char *extract[]={"unzip","-q",self,"-d",tmp,NULL};
   int rc=run(extract);
   if(rc) { fprintf(stderr,"SDK extraction failed: %d\n",rc); return rc; }
   if(!find_cc(tmp,compiler,sizeof(compiler),0)) {
