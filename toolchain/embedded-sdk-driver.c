@@ -89,8 +89,8 @@ int embedded_sdk_main(int argc,char **argv) {
   int rc=extract_sdk_zip(archive,tmp);
   if(rc) { fprintf(stderr,"SDK extraction failed: %d\n",rc); return rc; }
   if (!strcmp(argv[1], "rust")) {
-    if (argc < 3 || (strcmp(argv[2], "status") && strcmp(argv[2], "rustc"))) {
-      fputs("Usage: toolchain.com rust status | rust rustc [rustc arguments]\\n",stderr);
+    if (argc < 3 || (strcmp(argv[2], "status") && strcmp(argv[2], "rustc") && strcmp(argv[2], "cargo"))) {
+      fputs("Usage: toolchain.com rust status | rust rustc [args] | rust cargo [args]\\n",stderr);
       return 2;
     }
     char script[4096], marker[4096];
@@ -101,25 +101,34 @@ int embedded_sdk_main(int argc,char **argv) {
       fputs("Rust-APE source snapshot missing from embedded SDK\\n",stderr);
       return 1;
     }
-    char rustc[4096],sysroot[4096];
+    char rustc[4096],cargo[4096],sysroot[4096];
     if (snprintf(rustc,sizeof(rustc),"%s/rust-toolchain/bin/rustc",tmp)>=(int)sizeof(rustc) ||
-        snprintf(sysroot,sizeof(sysroot),"%s/rust-toolchain",tmp)>=(int)sizeof(sysroot))
+        snprintf(sysroot,sizeof(sysroot),"%s/rust-toolchain",tmp)>=(int)sizeof(sysroot) ||
+        snprintf(cargo,sizeof(cargo),"%s/rust-toolchain/bin/cargo",tmp)>=(int)sizeof(cargo))
       return 1;
     if (!strcmp(argv[2], "status")) {
       puts("PASS: embedded Rust-APE source snapshot extracted");
       puts(access(rustc,X_OK) ? "Rust compiler: not packaged" : "Rust compiler: packaged");
+      puts(access(cargo,X_OK) ? "Cargo: not packaged" : "Cargo: packaged");
       return 0;
     }
     if (access(rustc,X_OK)) {
       fputs("Rust compiler not packaged; set RUST_COMPILER_ROOT at packaging time\\n",stderr);
       return 2;
     }
+    int is_cargo=!strcmp(argv[2],"cargo");
+    if(is_cargo && access(cargo,X_OK)) {
+      fputs("Cargo not packaged; set RUST_COMPILER_ROOT with bin/cargo\\n",stderr);
+      return 2;
+    }
     char **rargs=calloc((size_t)argc+4,sizeof(char*));
     if (!rargs) return 1;
     int n=0;
-    rargs[n++]=rustc;
-    rargs[n++]="--sysroot";
-    rargs[n++]=sysroot;
+    rargs[n++]=is_cargo?cargo:rustc;
+    if(!is_cargo) {
+      rargs[n++]="--sysroot";
+      rargs[n++]=sysroot;
+    }
     for(int i=3;i<argc;i++)rargs[n++]=argv[i];
     rargs[n]=NULL;
     rc=run(rargs);
