@@ -8,7 +8,15 @@ mkdir -p o/toolchain
 "$COSMOCC" -O2 -c toolchain/ape_toolchain.c -o o/toolchain/dispatcher-embed.o
 "$COSMOCC" -O2 -c toolchain/embedded-sdk-driver.c -o o/toolchain/sdk-driver.o
 "$COSMOCC" -O2 -c toolchain/native_zip.c -I. -o o/toolchain/native-zip.o
-"$COSMOCC" -o o/toolchain/toolchain.com o/toolchain/dispatcher-embed.o o/toolchain/sdk-driver.o o/toolchain/native-zip.o -lz
+# Compile a minimal zlib implementation with the same Cosmopolitan toolchain.
+ZLIB_SRC="adler32 crc32 inffast inflate inftrees zutil"
+ZLIB_OBJS=""
+for unit in $ZLIB_SRC; do
+  "$COSMOCC" -O2 -I. -c "third_party/zlib/$unit.c" -o "o/toolchain/zlib-$unit.o"
+  ZLIB_OBJS="$ZLIB_OBJS o/toolchain/zlib-$unit.o"
+done
+# Deliberate word splitting: object file list generated from fixed source names.
+"$COSMOCC" -o o/toolchain/toolchain.com o/toolchain/dispatcher-embed.o o/toolchain/sdk-driver.o o/toolchain/native-zip.o $ZLIB_OBJS
 mkdir -p o/toolchain/compiler-payload
 python3 - "$COSMOCC_ROOT" <<'PY'
 import os,sys,zipfile,hashlib
