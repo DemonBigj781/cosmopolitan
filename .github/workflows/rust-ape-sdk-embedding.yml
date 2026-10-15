@@ -1,0 +1,192 @@
+name: Embedded patched Rust-APE SDK packaging validation
+on:
+  push:
+    branches: [machin-cosmopolitan]
+    paths:
+      - 'toolchain/**'
+      - '.github/workflows/rust-ape-sdk-embedding.yml'
+  workflow_dispatch:
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Cosmopolitan SDK
+        run: |
+          curl -fL --retry 3 https://cosmo.zip/pub/cosmocc/cosmocc.zip -o /tmp/cosmocc.zip
+          mkdir -p /tmp/cosmocc
+          unzip -q /tmp/cosmocc.zip -d /tmp/cosmocc
+      - name: Build bootstrap APE
+        run: |
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          test -n "$COSMOCC"
+          COSMOCC="$COSMOCC" sh toolchain/build.sh
+      - name: Install Cosmopolitan build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: Build Machin bootstrap compiler
+        run: |
+          git clone --depth 1 https://github.com/javimosch/machin.git /tmp/machin
+          (cd /tmp/machin && go build -o /tmp/machin-compiler .)
+      - name: Install pinned Rust compiler and stage minimal sysroot
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly-2026-07-28 --profile minimal
+          rustup target add aarch64-unknown-linux-gnu --toolchain nightly-2026-07-28
+          RUSTC="$(rustup which --toolchain nightly-2026-07-28 rustc)"
+          SYSROOT="$(dirname "$(dirname "$RUSTC")")"
+          mkdir -p /tmp/rust-embedded/bin /tmp/rust-embedded/lib
+          cp -a "$SYSROOT/bin/rustc" /tmp/rust-embedded/bin/
+          cp -a "$SYSROOT/bin/cargo" /tmp/rust-embedded/bin/
+          # Include rustc's shared libraries and the host-target core/metadata libraries.
+          cp -a "$SYSROOT/lib/." /tmp/rust-embedded/lib/
+          /tmp/rust-embedded/bin/rustc --version
+      - name: Stage patched Rust-APE SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          export COSMO_RUST_BUILD_ROOT="$GITHUB_WORKSPACE/o/rust-ape"
+          bash third_party/rust_ape/run.sh setup
+          test -f "$COSMO_RUST_BUILD_ROOT/sdk/generated/x86_64-unknown-linux-musl.json"
+          test -x "$COSMO_RUST_BUILD_ROOT/sdk/vendor/cosmocc/bin/apelink"
+      - name: Append SDK payload and verify APE still executes
+        run: |
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          COSMOCC="$COSMOCC" COSMOCC_ROOT=/tmp/cosmocc RUST_APE_SOURCE=third_party/rust_ape RUST_COMPILER_ROOT=/tmp/rust-embedded RUST_APE_SDK_ROOT=$GITHUB_WORKSPACE/o/rust-ape/sdk MACHIN=/tmp/machin-compiler MACHIN_SRC=/tmp/machin bash toolchain/package-compiler-sdk.sh
+      - name: Verify Rust-APE source is embedded in SDK payload
+        run: |
+          python3 - <<'PY'
+          import zipfile
+          path='o/toolchain/compiler-payload/cosmocc-sdk.zip'
+          with zipfile.ZipFile(path) as z:
+              assert z.testzip() is None
+              assert 'rust-ape/run.sh' in z.namelist()
+              assert 'rust-ape/EMBEDDED.txt' in z.namelist()
+              print('PASS: Rust-APE source bundled into embedded SDK')
+          PY
+      - name: Verify patched Rust-APE target packaged and extracted
+        shell: bash
+        run: |
+          set -euo pipefail
+          APE=o/toolchain/compiler-payload/toolchain-with-sdk.com
+          "$APE" rust status | tee /tmp/rust-ape-sdk-status.log
+          grep -Fx 'Rust-APE patched target: packaged' /tmp/rust-ape-sdk-status.log
+          python3 - <<'PY'
+          import zipfile
+          path='o/toolchain/compiler-payload/cosmocc-sdk.zip'
+          with zipfile.ZipFile(path) as z:
+              assert z.testzip() is None
+              assert 'rust-ape-sdk/generated/x86_64-unknown-linux-musl.json' in z.namelist()
+              assert 'rust-ape-sdk/vendor/cosmocc/bin/apelink' in z.namelist()
+          print('PASS: patched target and apelink packaged in embedded archive')
+          PY
+      - name: Verify Rust-APE snapshot via packaged APE command
+        run: |
+          set -euo pipefail
+          APE=o/toolchain/compiler-payload/toolchain-with-sdk.com
+          "$APE" rust status | tee /tmp/rust-ape-status.log
+          grep -Fx 'PASS: embedded Rust-APE source snapshot extracted' /tmp/rust-ape-status.log
+          grep -Fx 'Rust compiler: packaged' /tmp/rust-ape-status.log
+          "$APE" rust rustc --version
+          "$APE" rust cargo --version
+          cat >/tmp/rust-embedded-smoke.rs <<'EOF'
+          #![no_std]
+          #[unsafe(no_mangle)]
+          pub extern "C" fn rust_multiply(a: i32, b: i32) -> i32 { a * b }
+          EOF
+          "$APE" rust rustc --edition=2024 --crate-type=lib --emit=obj -C panic=abort -C overflow-checks=off /tmp/rust-embedded-smoke.rs -o /tmp/rust-embedded-smoke.o
+          test -s /tmp/rust-embedded-smoke.o
+          mkdir -p /tmp/.aarch64
+          "$APE" rust rustc --edition=2024 --target aarch64-unknown-linux-gnu --crate-type=lib --emit=obj -C panic=abort -C overflow-checks=off /tmp/rust-embedded-smoke.rs -o /tmp/.aarch64/rust-embedded-smoke.o
+          test -s /tmp/.aarch64/rust-embedded-smoke.o
+          file /tmp/rust-embedded-smoke.o /tmp/.aarch64/rust-embedded-smoke.o
+          cat >/tmp/rust-embedded-main.c <<'EOF'
+          #include <stdio.h>
+          extern int rust_multiply(int, int);
+          int main(void) {
+            int n=rust_multiply(6,7);
+            printf("RUST EMBEDDED PASS: %d\n",n);
+            return n==42?0:1;
+          }
+          EOF
+          "$APE" cc -c /tmp/rust-embedded-main.c -o /tmp/rust-embedded-main.o
+          "$APE" cc /tmp/rust-embedded-main.o /tmp/rust-embedded-smoke.o -o /tmp/rust-embedded.com
+          output="$(/tmp/rust-embedded.com)" || { echo 'FAIL: Rust-linked APE exited nonzero' >&2; exit 1; }
+          printf 'Actual output: <%s>\\n' "$output"
+          test "$output" = 'RUST EMBEDDED PASS: 42' || { echo 'FAIL: Rust-linked APE output mismatch' >&2; exit 1; }
+          echo 'PASS: packaged rustc compiled object and Cosmopolitan linked APE'
+      - name: Validate packaged Cargo with host standard library
+        shell: bash
+        run: |
+          set -euo pipefail
+          APE="$GITHUB_WORKSPACE/o/toolchain/compiler-payload/toolchain-with-sdk.com"
+          mkdir -p /tmp/cargo-stdlib-smoke/src
+          cat > /tmp/cargo-stdlib-smoke/Cargo.toml <<'EOF'
+          [package]
+          name = "cargo_stdlib_smoke"
+          version = "0.1.0"
+          edition = "2024"
+          EOF
+          cat > /tmp/cargo-stdlib-smoke/src/main.rs <<'EOF'
+          fn main() {
+              let values = vec![6, 7];
+              let message = String::from("CARGO STD PASS");
+              println!("{}: {}", message, values[0] * values[1]);
+          }
+          EOF
+          cd /tmp/cargo-stdlib-smoke
+          "$APE" rust cargo --offline check --manifest-path Cargo.toml
+          echo 'PASS: embedded Cargo checked a host-target std project'
+          echo 'NOTE: this does not validate Cosmopolitan Rust std or APE linking'
+      - name: One-command embedded Rust to Cosmopolitan APE
+        shell: bash
+        run: |
+          set -euo pipefail
+          APE="$GITHUB_WORKSPACE/o/toolchain/compiler-payload/toolchain-with-sdk.com"
+          cat > /tmp/rust-one-command.rs <<'EOF'
+          #![no_std]
+          unsafe extern "C" { fn puts(s: *const i8) -> i32; }
+          #[unsafe(no_mangle)]
+          pub extern "C" fn rust_main() -> i32 {
+              unsafe { puts(b"RUST ONE COMMAND PASS\0".as_ptr().cast()); }
+              0
+          }
+          EOF
+          "$APE" rust build /tmp/rust-one-command.rs -o /tmp/rust-one-command.com
+          test -s /tmp/rust-one-command.com
+          output="$(/tmp/rust-one-command.com)" || { echo 'FAIL: Rust one-command APE exited nonzero' >&2; exit 1; }
+          printf 'Actual output: <%s>\n' "$output"
+          test "$output" = 'RUST ONE COMMAND PASS' || { echo 'FAIL: Rust one-command output mismatch' >&2; exit 1; }
+          echo 'PASS: one-command Rust to APE'
+      - name: Compile C using SDK packaged inside APE
+        # Verify the ZIP footer is consumed by the updated C driver.
+        run: |
+          printf '#include <stdio.h>\nint main(void){puts("embedded compiler PASS");return 0;}\n' > /tmp/embedded-test.c
+          # Block Python explicitly without hiding compiler dependencies.
+          mkdir -p /tmp/ape-runtime-bin
+          printf '#!/bin/sh\necho "ERROR: Python invoked" >&2\nexit 97\n' > /tmp/ape-runtime-bin/python3
+          cp /tmp/ape-runtime-bin/python3 /tmp/ape-runtime-bin/python
+          chmod +x /tmp/ape-runtime-bin/python*
+          PATH="/tmp/ape-runtime-bin:$PATH" o/toolchain/compiler-payload/toolchain-with-sdk.com cc -o /tmp/embedded-test.com /tmp/embedded-test.c
+          /tmp/embedded-test.com | grep -Fx 'embedded compiler PASS'
+      - name: Verify both compilers in one APE
+        run: |
+          APE=o/toolchain/compiler-payload/toolchain-with-sdk.com
+          "$APE" machin-compiler --full toolchain/machin_demo.mfl > /tmp/combined-demo.c
+          test -s /tmp/combined-demo.c
+          "$APE" cc -o /tmp/combined-demo.com /tmp/combined-demo.c
+          /tmp/combined-demo.com | grep -Fx 'Machin linked into Cosmopolitan APE'
+      - name: One-command Machin to APE smoke test
+        run: |
+          APE=o/toolchain/compiler-payload/toolchain-with-sdk.com
+          "$APE" machin build toolchain/machin_demo.mfl -o /tmp/machin-one-command.com
+          /tmp/machin-one-command.com | grep -Fx 'Machin linked into Cosmopolitan APE'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ape-with-compiler-sdk-payload-experimental
+          path: o/toolchain/compiler-payload/toolchain-with-sdk.com
