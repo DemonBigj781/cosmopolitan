@@ -35,6 +35,25 @@ static int safe(const char *s){
   }
   return 1;
 }
+/* Validate relative symlink targets lexically against the SDK root.
+ * name is the link location relative to root; target may use .. within root. */
+static int safe_link_target(const char *name,const char *target){
+  if(!*target||*target=='/'||strchr(target,'\\\\'))return 0;
+  int depth=0;
+  for(const char *p=name;*p;){
+    const char *q=strchr(p,'/');if(!q)break;
+    if(q>p)depth++;
+    p=q+1;
+  }
+  for(const char *p=target;*p;){
+    const char *q=strchr(p,'/');size_t n=q?(size_t)(q-p):strlen(p);
+    if(n==2&&p[0]=='.'&&p[1]=='.'){if(--depth<0)return 0;}
+    else if(n&&!(n==1&&p[0]=='.'))depth++;
+    if(!q)break;
+    p=q+1;
+  }
+  return 1;
+}
 static int inflate_entry(FILE *f,uint64_t off,uint32_t clen,uint32_t ulen,
                          int method,unsigned char **result){
   if(ulen>512*1024*1024u)return -1;
@@ -91,7 +110,7 @@ int extract_sdk_zip(const char *archive,const char *root){
     if(dirs(path)){free(bytes);goto done;}
     if((mode&0170000)==0120000){
       /* Symlink target must remain inside SDK tree; reject absolute/traversal. */
-      if(!plain||memchr(bytes,0,plain)||!safe((char*)bytes)||symlink((char*)bytes,path)){fprintf(stderr,"ZIP: symlink rejected: %s -> %s\n",name,bytes);free(bytes);goto done;}
+      if(!plain||memchr(bytes,0,plain)||!safe_link_target(name,(char*)bytes)||symlink((char*)bytes,path)){fprintf(stderr,"ZIP: symlink rejected: %s -> %s\n",name,bytes);free(bytes);goto done;}
     }else if(name[nl-1]=='/'){
       if(mkdir(path,0700)&&errno!=EEXIST){free(bytes);goto done;}
     }else{
