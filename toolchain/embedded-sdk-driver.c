@@ -1,4 +1,4 @@
-/* Experimental SDK launcher. Uses host unzip for ZIP extraction; no Python required.
+/* Experimental SDK launcher. Uses native C ZIP extraction; no Python or unzip required.
  * Not yet a dependency-free or in-process compiler. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,6 +8,8 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <limits.h>
+
+extern int extract_sdk_zip(const char *archive,const char *root);
 
 static int find_cc(const char *dir, char *out, size_t cap, int depth) {
   if (depth > 12) return 0;
@@ -84,8 +86,7 @@ int embedded_sdk_main(int argc,char **argv) {
   char archive[4096];
   if(snprintf(archive,sizeof(archive),"%s/sdk.zip",tmp)>=(int)sizeof(archive)) return 1;
   if(split_payload(self,archive)) return 1;
-  char *extract[]={"unzip","-q",archive,"-d",tmp,NULL};
-  int rc=run(extract);
+  int rc=extract_sdk_zip(archive,tmp);
   if(rc) { fprintf(stderr,"SDK extraction failed: %d\n",rc); return rc; }
   if(!find_cc(tmp,compiler,sizeof(compiler),0)) {
     fputs("No cosmocc compiler found in embedded SDK\n",stderr); return 1;
