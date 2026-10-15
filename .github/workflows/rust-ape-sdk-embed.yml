@@ -1,0 +1,97 @@
+name: Embedded patched Rust-APE SDK packaging
+on:
+  push:
+    branches: [machin-cosmopolitan]
+    paths:
+      - 'toolchain/**'
+      - '.github/workflows/rust-ape-sdk-embed.yml'
+  workflow_dispatch:
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Cosmopolitan SDK
+        run: |
+          curl -fL --retry 3 https://cosmo.zip/pub/cosmocc/cosmocc.zip -o /tmp/cosmocc.zip
+          mkdir -p /tmp/cosmocc
+          unzip -q /tmp/cosmocc.zip -d /tmp/cosmocc
+      - name: Build bootstrap APE
+        run: |
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          test -n "$COSMOCC"
+          COSMOCC="$COSMOCC" sh toolchain/build.sh
+      - name: Install Cosmopolitan build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: Build Machin bootstrap compiler
+        run: |
+          git clone --depth 1 https://github.com/javimosch/machin.git /tmp/machin
+          (cd /tmp/machin && go build -o /tmp/machin-compiler .)
+      - name: Install pinned Rust compiler and stage minimal sysroot
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly-2026-07-28 --profile minimal
+          rustup target add aarch64-unknown-linux-gnu --toolchain nightly-2026-07-28
+          RUSTC="$(rustup which --toolchain nightly-2026-07-28 rustc)"
+          SYSROOT="$(dirname "$(dirname "$RUSTC")")"
+          mkdir -p /tmp/rust-embedded/bin /tmp/rust-embedded/lib
+          cp -a "$SYSROOT/bin/rustc" /tmp/rust-embedded/bin/
+          cp -a "$SYSROOT/bin/cargo" /tmp/rust-embedded/bin/
+          # Include rustc's shared libraries and the host-target core/metadata libraries.
+          cp -a "$SYSROOT/lib/." /tmp/rust-embedded/lib/
+          /tmp/rust-embedded/bin/rustc --version
+      - name: Prepare patched Rust-APE SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          export COSMO_RUST_BUILD_ROOT="$GITHUB_WORKSPACE/o/rust-ape"
+          bash third_party/rust_ape/run.sh setup
+          test -s "$COSMO_RUST_BUILD_ROOT/sdk/generated/x86_64-unknown-linux-musl.json"
+          test -x "$COSMO_RUST_BUILD_ROOT/sdk/vendor/cosmocc/bin/apelink"
+      - name: Package patched Rust-APE SDK in unified toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          COSMOCC="$COSMOCC" COSMOCC_ROOT=/tmp/cosmocc \
+            RUST_APE_SOURCE=third_party/rust_ape \
+            RUST_COMPILER_ROOT=/tmp/rust-embedded \
+            RUST_APE_SDK_ROOT="$GITHUB_WORKSPACE/o/rust-ape/sdk" \
+            MACHIN=/tmp/machin-compiler MACHIN_SRC=/tmp/machin \
+            bash toolchain/package-compiler-sdk.sh
+      - name: Validate patched SDK payload inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import zipfile
+          archive='o/toolchain/compiler-payload/cosmocc-sdk.zip'
+          with zipfile.ZipFile(archive) as z:
+              names=set(z.namelist())
+              required={
+                  'rust-ape-sdk/generated/x86_64-unknown-linux-musl.json',
+                  'rust-ape-sdk/vendor/cosmocc/bin/apelink',
+                  'rust-toolchain/bin/rustc',
+                  'rust-toolchain/bin/cargo',
+                  'rust-ape/run.sh',
+              }
+              missing=required-names
+              assert not missing, f'Missing SDK resources: {missing}'
+              print('PASS: patched SDK target, linker, Cargo and Rust compiler packaged')
+          PY
+      - name: Check embedded SDK status
+        shell: bash
+        run: |
+          set -euo pipefail
+          APE=o/toolchain/compiler-payload/toolchain-with-sdk.com
+          "$APE" rust status | tee /tmp/rust-sdk-status.txt
+          grep -Fx 'Patched Rust-APE SDK: packaged' /tmp/rust-sdk-status.txt
+          "$APE" rust cargo --version
+          "$APE" machin build toolchain/machin_demo.mfl -o /tmp/machin-embed-regression.com
+          /tmp/machin-embed-regression.com | grep -Fx 'Machin linked into Cosmopolitan APE'
