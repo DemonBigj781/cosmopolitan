@@ -69,10 +69,10 @@ int extract_sdk_zip(const char *archive,const char *root){
   if(eocd<0||!read_at(f,eocd,end,22))goto done;
   if(u16(end+4)||u16(end+6)||u16(end+8)!=u16(end+10))goto done;
   uint32_t count=u16(end+10),cdsize=u32(end+12),cdoff=u32(end+16);
-  if((uint64_t)cdoff+cdsize>(uint64_t)size)goto done;
+  if((uint64_t)cdoff+cdsize>(uint64_t)size){fputs("ZIP: invalid central directory bounds\n",stderr);goto done;}
   uint64_t pos=cdoff;
   for(uint32_t i=0;i<count;i++){
-    if(!read_at(f,pos,head,46)||u32(head)!=0x02014b50)goto done;
+    if(!read_at(f,pos,head,46)||u32(head)!=0x02014b50){fprintf(stderr,"ZIP: central header failed at entry %u\n",i);goto done;}
     uint16_t flags=u16(head+8),method=u16(head+10),nl=u16(head+28),el=u16(head+30),cl=u16(head+32);
     uint32_t crc=u32(head+16),compressed=u32(head+20),plain=u32(head+24),loff=u32(head+42);
     uint32_t mode=u32(head+38)>>16;
@@ -80,18 +80,18 @@ int extract_sdk_zip(const char *archive,const char *root){
     char name[2048],path[4096];
     if(!read_at(f,pos+46,name,nl))goto done;
     name[nl]=0;
-    if(!safe(name)||snprintf(path,sizeof(path),"%s/%s",root,name)>=(int)sizeof(path))goto done;
+    if(!safe(name)||snprintf(path,sizeof(path),"%s/%s",root,name)>=(int)sizeof(path)){fprintf(stderr,"ZIP: unsafe entry: %s\n",name);goto done;}
     pos+=46u+nl+el+cl;
     if(!read_at(f,loff,local,30)||u32(local)!=0x04034b50)goto done;
     uint64_t data=(uint64_t)loff+30+u16(local+26)+u16(local+28);
     if(data+compressed>(uint64_t)size)goto done;
     unsigned char *bytes=NULL;
-    if(inflate_entry(f,data,compressed,plain,method,&bytes))goto done;
+    if(inflate_entry(f,data,compressed,plain,method,&bytes)){fprintf(stderr,"ZIP: inflate failed: %s method=%u compressed=%u plain=%u\n",name,method,compressed,plain);goto done;}
     if((uint32_t)crc32(0,bytes,plain)!=crc){free(bytes);goto done;}
     if(dirs(path)){free(bytes);goto done;}
     if((mode&0170000)==0120000){
       /* Symlink target must remain inside SDK tree; reject absolute/traversal. */
-      if(!plain||memchr(bytes,0,plain)||!safe((char*)bytes)||symlink((char*)bytes,path)){free(bytes);goto done;}
+      if(!plain||memchr(bytes,0,plain)||!safe((char*)bytes)||symlink((char*)bytes,path)){fprintf(stderr,"ZIP: symlink rejected: %s -> %s\n",name,bytes);free(bytes);goto done;}
     }else if(name[nl-1]=='/'){
       if(mkdir(path,0700)&&errno!=EEXIST){free(bytes);goto done;}
     }else{
