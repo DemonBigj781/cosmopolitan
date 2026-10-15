@@ -38,18 +38,19 @@ int machin_build_main(int argc,char **argv){
   }
   char self[4096];
   if(!realpath(argv[0],self)){perror("resolve APE");return 1;}
-  char temp[]="/tmp/machin-ape-XXXXXX";
-  int fd=mkstemp(temp);
-  if(fd<0){perror("mkstemp");return 1;}
-  close(fd);
+  char tempdir[]="/tmp/machin-ape-XXXXXX";
+  if(!mkdtemp(tempdir)){perror("mkdtemp");return 1;}
+  char temp[4096];
+  if(snprintf(temp,sizeof(temp),"%s/generated.c",tempdir)>=(int)sizeof(temp))return 1;
   char *generate[]={self,"machin-compiler","--full",(char*)source,NULL};
   int rc=child(generate,temp);
   if(!rc){
-    char *compile[]={self,"cc","-O2","-std=c11","-pthread","-x","c",
+    char *compile[]={self,"cc","-O2","-std=c11","-pthread",
                      temp,"-o",(char*)output,NULL};
     rc=child(compile,NULL);
   }
-  if(unlink(temp))perror("remove intermediate C");
+  if(unlink(temp)&&errno!=ENOENT)perror("remove intermediate C");
+  if(rmdir(tempdir))perror("remove temporary directory");
   if(!rc)fprintf(stderr,"Built %s using the unified APE\\n",output);
   return rc;
 }
