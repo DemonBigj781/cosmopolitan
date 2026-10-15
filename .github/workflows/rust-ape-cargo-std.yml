@@ -1,0 +1,67 @@
+name: Rust-APE Cargo std integration
+on:
+  workflow_dispatch:
+  push:
+    branches: [machin-cosmopolitan]
+    paths:
+      - '.github/workflows/rust-ape-cargo-std.yml'
+      - 'third_party/rust_ape/**'
+jobs:
+  cargo-std:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up patched Cosmopolitan Rust-APE SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          export COSMO_RUST_BUILD_ROOT="$GITHUB_WORKSPACE/o/rust-ape"
+          bash third_party/rust_ape/run.sh setup
+          test -f "$COSMO_RUST_BUILD_ROOT/sdk/generated/x86_64-unknown-linux-musl.json"
+          test -x "$COSMO_RUST_BUILD_ROOT/sdk/vendor/cosmocc/bin/apelink"
+      - name: Build Rust std Cargo application with Rust-APE target
+        shell: bash
+        run: |
+          set -euo pipefail
+          export COSMO_RUST_BUILD_ROOT="$GITHUB_WORKSPACE/o/rust-ape"
+          export COSMO_RUST_ARCH=x86_64
+          mkdir -p /tmp/rust-ape-std-smoke/src
+          cat > /tmp/rust-ape-std-smoke/Cargo.toml <<'EOF'
+          [package]
+          name = "rust_ape_std_smoke"
+          version = "0.1.0"
+          edition = "2024"
+          EOF
+          cat > /tmp/rust-ape-std-smoke/src/main.rs <<'EOF'
+          fn main() {
+              let values = vec![6, 7];
+              let label = String::from("RUST APE STD PASS");
+              println!("{}: {}", label, values[0] * values[1]);
+          }
+          EOF
+          cd /tmp/rust-ape-std-smoke
+          bash "$GITHUB_WORKSPACE/third_party/rust_ape/run.sh" cargo build --release --manifest-path Cargo.toml
+      - name: Package Rust std binary as APE and execute
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="$GITHUB_WORKSPACE/o/rust-ape/sdk"
+          BUILD="$GITHUB_WORKSPACE/o/rust-ape/build"
+          DEBUG="$BUILD/x86_64-unknown-linux-musl/release/rust_ape_std_smoke"
+          if [ -f "$DEBUG.com.dbg" ]; then DEBUG="$DEBUG.com.dbg"; fi
+          test -s "$DEBUG" || {
+            echo "Rust-APE build output not found; candidates:" >&2
+            find "$BUILD" -name '*rust_ape_std_smoke*' -type f >&2
+            exit 1
+          }
+          "$SDK/vendor/cosmocc/bin/apelink" -l "$SDK/vendor/cosmocc/bin/ape-x86_64.elf" -o /tmp/rust-ape-std-smoke.com "$DEBUG"
+          output="$(/tmp/rust-ape-std-smoke.com)"
+          printf 'Actual output: <%s>\n' "$output"
+          test "$output" = 'RUST APE STD PASS: 42'
+          echo 'PASS: Cargo std -> Rust-APE -> Cosmopolitan APE -> Linux execution'
+      - name: Record build diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          find o/rust-ape/build -maxdepth 5 -name '*rust_ape_std_smoke*' -print 2>/dev/null || true
