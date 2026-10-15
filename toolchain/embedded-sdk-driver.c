@@ -112,6 +112,7 @@ int embedded_sdk_main(int argc,char **argv) {
       puts("PASS: embedded Rust-APE source snapshot extracted");
       puts(access(rustc,X_OK) ? "Rust compiler: not packaged" : "Rust compiler: packaged");
       puts(access(cargo,X_OK) ? "Cargo: not packaged" : "Cargo: packaged");
+      puts(access(cosmo_target,R_OK) ? "Rust-APE patched target: not packaged" : "Rust-APE patched target: packaged");
       puts(access(target,R_OK) || access(apelink,X_OK) ? "Patched Rust-APE SDK: not packaged" : "Patched Rust-APE SDK: packaged");
       return 0;
     }
