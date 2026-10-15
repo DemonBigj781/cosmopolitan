@@ -11,9 +11,14 @@ mkdir -p o/toolchain
 # Compile a minimal zlib implementation with the same Cosmopolitan toolchain.
 ZLIB_SRC="adler32 crc32 inffast inflate inftrees zutil"
 ZLIB_FLAGS="-DADLER32_SIMD_SSSE3 -DCRC32_SIMD_SSE42_PCLMUL -DCRC32_SIMD_AVX512_PCLMUL -DDEFLATE_SLIDE_HASH_SSE2 -DINFLATE_CHUNK_SIMD_SSE2 -DINFLATE_CHUNK_READ_64LE"
+COSMO_X64="$(dirname "$COSMOCC")/x86_64-linux-cosmo-gcc"
+if [ ! -x "$COSMO_X64" ]; then
+  echo "Missing x86-64 Cosmopolitan compiler: $COSMO_X64" >&2
+  exit 1
+fi
 ZLIB_OBJS=""
 for unit in $ZLIB_SRC; do
-  "$COSMOCC" -O2 -I. $ZLIB_FLAGS -c "third_party/zlib/$unit.c" -o "o/toolchain/zlib-$unit.o"
+  "$COSMO_X64" -O2 -I. $ZLIB_FLAGS -c "third_party/zlib/$unit.c" -o "o/toolchain/zlib-$unit.o"
   ZLIB_OBJS="$ZLIB_OBJS o/toolchain/zlib-$unit.o"
 done
 # Deliberate word splitting: object file list generated from fixed source names.
