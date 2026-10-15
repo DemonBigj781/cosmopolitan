@@ -1,0 +1,30 @@
+name: Experimental embedded compiler payload
+on:
+  push:
+    branches: [machin-cosmopolitan]
+    paths:
+      - 'toolchain/package-compiler-sdk.sh'
+      - '.github/workflows/compiler-payload.yml'
+  workflow_dispatch:
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Cosmopolitan SDK
+        run: |
+          curl -fL --retry 3 https://cosmo.zip/pub/cosmocc/cosmocc.zip -o /tmp/cosmocc.zip
+          mkdir -p /tmp/cosmocc
+          unzip -q /tmp/cosmocc.zip -d /tmp/cosmocc
+      - name: Build bootstrap APE
+        run: |
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          test -n "$COSMOCC"
+          COSMOCC="$COSMOCC" sh toolchain/build.sh
+      - name: Append SDK payload and verify APE still executes
+        run: |
+          COSMOCC_ROOT=/tmp/cosmocc bash toolchain/package-compiler-sdk.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ape-with-compiler-sdk-payload-experimental
+          path: o/toolchain/compiler-payload/toolchain-with-sdk.com
