@@ -1,4 +1,4 @@
-name: C++ standard library SDK audit
+name: C++ standard library integration validation
 on:
   workflow_dispatch:
   push:
@@ -68,17 +68,17 @@ jobs:
           }
           EOF
           set +e
-          "$APE" cc -std=c++17 -c headers.cpp -o headers.o >compile.log 2>&1
+          "$APE" c++ -std=c++17 headers.cpp -o headers.com >compile.log 2>&1
           status=$?
           set -e
           echo "Header compilation exit status: $status"
           cat compile.log
-          if [ "$status" -eq 0 ]; then
-            echo 'PASS: packaged SDK locates required C++ headers'
-          else
-            echo 'GAP: packaged SDK cannot compile standard C++ headers'
+          if [ "$status" -ne 0 ]; then
+            echo 'FAIL: packaged C++ compile/link' >&2
+            exit "$status"
           fi
-          # Audit-only: failures here are recorded rather than hiding inventory.
+          ./headers.com | grep -Fx 'C++ STL: 42 ok'
+          echo 'PASS: embedded C++ STL compilation, linking and execution'
       - name: Publish SDK audit report
         if: always()
         uses: actions/upload-artifact@v4
