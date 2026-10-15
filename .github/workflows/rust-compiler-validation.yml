@@ -73,10 +73,10 @@ jobs:
           #[unsafe(no_mangle)]
           pub extern "C" fn rust_multiply(a: i32, b: i32) -> i32 { a * b }
           EOF
-          "$APE" rust rustc --edition=2024 --crate-type=lib --emit=obj -C panic=abort /tmp/rust-embedded-smoke.rs -o /tmp/rust-embedded-smoke.o
+          "$APE" rust rustc --edition=2024 --crate-type=lib --emit=obj -C panic=abort -C overflow-checks=off /tmp/rust-embedded-smoke.rs -o /tmp/rust-embedded-smoke.o
           test -s /tmp/rust-embedded-smoke.o
           mkdir -p /tmp/.aarch64
-          "$APE" rust rustc --edition=2024 --target aarch64-unknown-linux-gnu --crate-type=lib --emit=obj -C panic=abort /tmp/rust-embedded-smoke.rs -o /tmp/.aarch64/rust-embedded-smoke.o
+          "$APE" rust rustc --edition=2024 --target aarch64-unknown-linux-gnu --crate-type=lib --emit=obj -C panic=abort -C overflow-checks=off /tmp/rust-embedded-smoke.rs -o /tmp/.aarch64/rust-embedded-smoke.o
           test -s /tmp/.aarch64/rust-embedded-smoke.o
           file /tmp/rust-embedded-smoke.o /tmp/.aarch64/rust-embedded-smoke.o
           cat >/tmp/rust-embedded-main.c <<'EOF'
