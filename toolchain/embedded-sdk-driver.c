@@ -41,9 +41,7 @@ static int run(char *const argv[]) {
 int embedded_sdk_main(int argc,char **argv) {
   if(argc<2) { fputs("Usage: toolchain.com cc [cosmocc arguments]\n",stderr); return 2; }
   char self[4096],tmp[]="/tmp/cosmo-sdk-XXXXXX",compiler[4096];
-  if(!realpath("/proc/self/exe",self)) {
-    if(!realpath(argv[0],self)) { perror("resolve executable"); return 1; }
-  }
+  if(!realpath(argv[0],self)) { perror("resolve executable"); return 1; }
   if(!mkdtemp(tmp)) { perror("mkdtemp"); return 1; }
   const char *script="import sys,zipfile\n"
     "z=zipfile.ZipFile(sys.argv[1]); z.extractall(sys.argv[2])\n"
