@@ -1,0 +1,80 @@
+name: C compiler and linker validation
+on:
+  workflow_dispatch:
+  push:
+    branches: [machin-cosmopolitan]
+    paths:
+      - 'toolchain/**'
+      - '.github/workflows/c-linker-validation.yml'
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Cosmopolitan SDK
+        run: |
+          curl -fL --retry 3 https://cosmo.zip/pub/cosmocc/cosmocc.zip -o /tmp/cosmocc.zip
+          mkdir -p /tmp/cosmocc
+          unzip -q /tmp/cosmocc.zip -d /tmp/cosmocc
+      - name: Build bootstrap APE
+        run: |
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          test -n "$COSMOCC"
+          COSMOCC="$COSMOCC" sh toolchain/build.sh
+      - name: Prepare Machin bootstrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make
+          git clone --depth 1 https://github.com/javimosch/machin.git /tmp/machin
+          cd /tmp/machin
+          go build -o /tmp/machin-compiler .
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: Package embedded compiler
+        run: |
+          COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
+          COSMOCC="$COSMOCC" COSMOCC_ROOT=/tmp/cosmocc MACHIN=/tmp/machin-compiler MACHIN_SRC=/tmp/machin bash toolchain/package-compiler-sdk.sh
+      - name: Validate C compiler and linker through embedded APE
+        shell: bash
+        run: |
+          set -euo pipefail
+          APE="$GITHUB_WORKSPACE/o/toolchain/compiler-payload/toolchain-with-sdk.com"
+          mkdir -p /tmp/c-linker-validation
+          cd /tmp/c-linker-validation
+          cat > math.c <<'EOF'
+          int add(int a, int b) { return a + b; }
+          EOF
+          cat > main.c <<'EOF'
+          #include <stdio.h>
+          extern int add(int, int);
+          int main(void) {
+            int value = add(19, 23);
+            printf("C LINK PASS: %d\n", value);
+            return value == 42 ? 0 : 1;
+          }
+          EOF
+          "$APE" cc -c math.c -o math.o
+          "$APE" cc -c main.c -o main.o
+          test -s math.o && test -s main.o
+          "$APE" cc main.o math.o -o linked.com
+          test "$(./linked.com)" = 'C LINK PASS: 42'
+          echo 'PASS: separate C compilation, cross-object symbols, APE link and execution'
+          cat > missing.c <<'EOF'
+          extern int missing_symbol(void);
+          int main(void) { return missing_symbol(); }
+          EOF
+          if "$APE" cc missing.c -o missing.com >missing.log 2>&1; then
+            echo 'FAIL: unresolved external unexpectedly linked' >&2
+            exit 1
+          fi
+          echo 'PASS: unresolved symbol correctly rejected'
+          cat > invalid.c <<'EOF'
+          int main(void) { this is not valid C; }
+          EOF
+          if "$APE" cc -c invalid.c -o invalid.o >invalid.log 2>&1; then
+            echo 'FAIL: invalid C unexpectedly compiled' >&2
+            exit 1
+          fi
+          echo 'PASS: invalid C correctly rejected'
+          echo 'ALL C COMPILER/LINKER CHECKS PASSED'
