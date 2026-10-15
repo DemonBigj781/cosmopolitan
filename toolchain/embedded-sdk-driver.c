@@ -88,6 +88,23 @@ int embedded_sdk_main(int argc,char **argv) {
   if(split_payload(self,archive)) return 1;
   int rc=extract_sdk_zip(archive,tmp);
   if(rc) { fprintf(stderr,"SDK extraction failed: %d\n",rc); return rc; }
+  if (!strcmp(argv[1], "rust")) {
+    if (argc != 3 || strcmp(argv[2], "status")) {
+      fputs("Usage: toolchain.com rust status (Rust compiler execution not yet integrated)\\n",stderr);
+      return 2;
+    }
+    char script[4096], marker[4096];
+    if (snprintf(script,sizeof(script),"%s/rust-ape/run.sh",tmp)>=(int)sizeof(script) ||
+        snprintf(marker,sizeof(marker),"%s/rust-ape/EMBEDDED.txt",tmp)>=(int)sizeof(marker))
+      return 1;
+    if (access(script,R_OK) || access(marker,R_OK)) {
+      fputs("Rust-APE source snapshot missing from embedded SDK\\n",stderr);
+      return 1;
+    }
+    puts("PASS: embedded Rust-APE source snapshot extracted");
+    puts("Rust compiler execution: not yet integrated");
+    return 0;
+  }
   if(!find_cc(tmp,compiler,sizeof(compiler),0)) {
     fputs("No cosmocc compiler found in embedded SDK\n",stderr); return 1;
   }
