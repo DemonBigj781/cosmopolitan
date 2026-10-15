@@ -108,11 +108,6 @@ int embedded_sdk_main(int argc,char **argv) {
   int n=0;
   args[n++]=compiler;
   if(is_cpp) {
-    args[n++]="-x";
-    args[n++]="c++";
-    /* -x applies to every subsequent input: reset it before objects/libraries.
-       Use the extension-based language selection instead. */
-    n-=2;
     args[n++]="-I";
     args[n++]=headers;
   }
