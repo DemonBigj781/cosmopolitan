@@ -21,9 +21,9 @@ test -f "$ZLIB_ARCHIVE" || { echo "Cosmopolitan zlib archive missing" >&2; exit 
 # rejects a library without a matching aarch64 companion.
 COSMO_X64="$(dirname "$COSMOCC")/x86_64-linux-cosmo-gcc"
 test -x "$COSMO_X64" || { echo "Missing x86-64 compiler" >&2; exit 1; }
-"$COSMO_X64" -O2 -c toolchain/ape_toolchain.c -o o/toolchain/dispatcher-x64.o
-"$COSMO_X64" -O2 -c toolchain/embedded-sdk-driver.c -o o/toolchain/sdk-driver-x64.o
-"$COSMO_X64" -O2 -I. -c toolchain/native_zip.c -o o/toolchain/native-zip-x64.o
+"$COSMOCC" -O2 -c toolchain/ape_toolchain.c -o o/toolchain/dispatcher-x64.o
+"$COSMOCC" -O2 -c toolchain/embedded-sdk-driver.c -o o/toolchain/sdk-driver-x64.o
+"$COSMOCC" -O2 -I. -c toolchain/native_zip.c -o o/toolchain/native-zip-x64.o
 "$COSMO_X64" -o o/toolchain/toolchain.com \
   o/toolchain/dispatcher-x64.o o/toolchain/sdk-driver-x64.o \
   o/toolchain/native-zip-x64.o "$ZLIB_ARCHIVE"
