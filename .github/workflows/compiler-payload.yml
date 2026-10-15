@@ -28,7 +28,13 @@ jobs:
       - name: Compile C using SDK packaged inside APE
         run: |
           printf '#include <stdio.h>\nint main(void){puts("embedded compiler PASS");return 0;}\n' > /tmp/embedded-test.c
-          o/toolchain/compiler-payload/toolchain-with-sdk.com cc -o /tmp/embedded-test.com /tmp/embedded-test.c
+          # Hide Python from PATH to prove the runtime extractor doesn't use it.
+          mkdir -p /tmp/ape-runtime-bin
+          for name in unzip sh env; do
+            command -v "$name" >/dev/null
+            ln -sf "$(command -v "$name")" "/tmp/ape-runtime-bin/$name"
+          done
+          PATH=/tmp/ape-runtime-bin o/toolchain/compiler-payload/toolchain-with-sdk.com cc -o /tmp/embedded-test.com /tmp/embedded-test.c
           /tmp/embedded-test.com | grep -Fx 'embedded compiler PASS'
       - uses: actions/upload-artifact@v4
         with:
