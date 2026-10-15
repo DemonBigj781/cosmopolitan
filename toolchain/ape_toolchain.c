@@ -11,6 +11,7 @@ static void usage(const char *name) {
   puts("Commands:");
   puts("  cc           Run packaged Cosmopolitan compiler (experimental)");
   puts("  c++          Compile and link C++ with packaged libcxx headers/runtime");
+  puts("  rust status  Verify embedded Rust-APE source snapshot (compiler not yet embedded)");
   puts("  machin-compiler  Run linked self-hosted Machin compiler");
   puts("  machin-demo  Run statically linked Machin sample (when available)");
   puts("  version       Show bootstrap version");
@@ -30,7 +31,7 @@ int main(int argc, char **argv) {
     if (!machin_entry) { fputs("Machin module not linked\\n", stderr); return 2; }
     return machin_entry(argc - 1, argv + 1);
   }
-  if (!strcmp(argv[1], "cc") || !strcmp(argv[1], "c++")) {
+  if (!strcmp(argv[1], "cc") || !strcmp(argv[1], "c++") || !strcmp(argv[1], "rust")) {
     if (!embedded_sdk_main) { fputs("Embedded SDK driver not linked\\n", stderr); return 2; }
     return embedded_sdk_main(argc, argv);
   }
