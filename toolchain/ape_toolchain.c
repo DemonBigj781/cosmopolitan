@@ -7,6 +7,7 @@ static void usage(const char *name) {
   printf("Cosmopolitan unified APE toolchain (bootstrap)\n");
   printf("Usage: %s <command>\n", name);
   puts("Commands:");
+  puts("  machin-compiler  Run linked self-hosted Machin compiler");
   puts("  machin-demo  Run statically linked Machin sample (when available)");
   puts("  version       Show bootstrap version");
   puts("  selftest      Verify command dispatch");
@@ -21,7 +22,7 @@ int main(int argc, char **argv) {
     usage(argv[0]);
     return 0;
   }
-  if (!strcmp(argv[1], "machin-demo")) {
+  if (!strcmp(argv[1], "machin-demo") || !strcmp(argv[1], "machin-compiler")) {
     if (!machin_entry) { fputs("Machin module not linked\\n", stderr); return 2; }
     return machin_entry(argc - 1, argv + 1);
   }
