@@ -17,11 +17,12 @@ if [ ! -f "$ZLIB_ARCHIVE" ]; then
   ZLIB_ARCHIVE="o//third_party/zlib/zlib.a"
 fi
 test -f "$ZLIB_ARCHIVE" || { echo "Cosmopolitan zlib archive missing" >&2; exit 1; }
-# Use the Cosmopolitan wrapper to supply startup/runtime objects.
-# Restrict the output to x86-64 to match the Make-built zlib archive.
-"$COSMOCC" -O2 -mno-red-zone -o o/toolchain/toolchain.com \
+# Use the SDK's configured C driver, but pass the library through
+# the linker as an exact filename to avoid cosmocc multi-arch archive pairing.
+"$COSMOCC" -O2 -o o/toolchain/toolchain.com \
   o/toolchain/dispatcher-embed.o o/toolchain/sdk-driver.o \
-  o/toolchain/native-zip.o "$ZLIB_ARCHIVE" -m64
+  o/toolchain/native-zip.o -Wl,--whole-archive \
+  -Wl,"$ZLIB_ARCHIVE" -Wl,--no-whole-archive
 mkdir -p o/toolchain/compiler-payload
 python3 - "$COSMOCC_ROOT" <<'PY'
 import os,sys,zipfile,hashlib
