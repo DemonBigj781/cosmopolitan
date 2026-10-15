@@ -8,6 +8,7 @@ mkdir -p o/toolchain
 "$COSMOCC" -O2 -c toolchain/ape_toolchain.c -o o/toolchain/dispatcher-embed.o
 "$COSMOCC" -O2 -c toolchain/embedded-sdk-driver.c -o o/toolchain/sdk-driver.o
 "$COSMOCC" -O2 -c toolchain/native_zip.c -I. -o o/toolchain/native-zip.o
+"$COSMOCC" -O2 -c toolchain/machin_build.c -o o/toolchain/machin-build.o
 # Optional self-hosted Machin compiler linked into the SAME APE.
 if [[ -n "${MACHIN:-}" && -n "${MACHIN_SRC:-}" ]]; then
   sources=(selfhost/lex.src selfhost/parse.src selfhost/check.src
@@ -42,7 +43,7 @@ mkdir -p o/third_party/zlib/.aarch64
 cp "$ARM_ZLIB" o/third_party/zlib/.aarch64/zlib.a
 "$COSMOCC" -O2 -o o/toolchain/toolchain.com \
   o/toolchain/dispatcher-embed.o o/toolchain/sdk-driver.o \
-  o/toolchain/native-zip.o ${MACHIN_OBJECT:+"$MACHIN_OBJECT"} "$ZLIB_ARCHIVE"
+  o/toolchain/native-zip.o o/toolchain/machin-build.o ${MACHIN_OBJECT:+"$MACHIN_OBJECT"} "$ZLIB_ARCHIVE"
 mkdir -p o/toolchain/compiler-payload
 python3 - "$COSMOCC_ROOT" <<'PY'
 import os,sys,zipfile,hashlib
