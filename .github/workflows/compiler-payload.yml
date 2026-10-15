@@ -26,6 +26,7 @@ jobs:
           COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
           COSMOCC="$COSMOCC" COSMOCC_ROOT=/tmp/cosmocc bash toolchain/package-compiler-sdk.sh
       - name: Compile C using SDK packaged inside APE
+        # Verify the ZIP footer is consumed by the updated C driver.
         run: |
           printf '#include <stdio.h>\nint main(void){puts("embedded compiler PASS");return 0;}\n' > /tmp/embedded-test.c
           # Block Python explicitly without hiding compiler dependencies.
