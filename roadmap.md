@@ -68,6 +68,24 @@ bootstrap sysroot; do not conflate that inventory with the local counts above.
 The hosted workflows still have some unpinned upstream downloads, so fully
 reproducible bootstrap inputs remain a separate task below.
 
+### SDK lifetime and relocation checkpoint
+
+All 11 triggered workflows passed for source commit
+`2c9fcf5e8f8756b4f16210882678b7bc0f102c37`. Run `38978181361` passed all six jobs:
+packaging, four independent compiler probes, and relocated Rust SDK validation.
+The probes verified one C materialization for C/C++/Machin and one Rust plus one
+C materialization for `rust build`, with no owned temporary paths remaining.
+A genuine compiler-input failure also cleaned its SDK while preserving caller
+data. Local regression coverage includes 39 tests with GCC and Clang.
+
+On a fresh runner, the exported SDK was moved away from its extraction location
+and used with the packaged nightly compiler to build a standard-library program.
+The resulting APE printed `RUST RELOCATED STD PASS: 42`. This validates Linux
+x86-64; it does not establish ARM64 std execution or Windows/macOS compatibility.
+The pinned Cargo's patch-path and std-source behavior is checked directly using
+offline metadata and unit-graph probes, not assumed from another Cargo version.
+The local recovery tag is `checkpoint/sdk-lifetime-linux-ci-20261016`.
+
 ## 2. Current milestone: self-contained existing toolchain
 
 - [x] Prove native ZIPOS reads from the real SDK without extraction, using the
@@ -80,13 +98,14 @@ reproducible bootstrap inputs remain a separate task below.
   extraction. Compiler paths no longer create a separate copy of the SDK ZIP.
 - [x] Re-run all four compiler smoke tests against the migrated format on hosted
   CI using the same downloaded artifact in separate jobs.
-- [ ] Avoid redundant whole-SDK extraction for compiler subprocesses; explicitly
+- [x] Avoid redundant whole-SDK extraction for compiler subprocesses; explicitly
   determine what must exist on disk and manage temporary-file lifetimes.
   Component-selective extraction, process-local Rust/C reuse, and owned-directory
-  cleanup are implemented; full hosted validation is pending.
-- [ ] Make packaged Rust target/linker definitions relocatable at their source.
-  A source-template renderer now emits portable packaged definitions; the fresh-
-  runner relocation and standard-library build gate is pending.
+  cleanup passed hosted success and failure checks. This is not a persistent
+  cache; abrupt termination may still leave scratch files.
+- [x] Make packaged Rust target/linker definitions relocatable at their source.
+  Source-template rendering and the fresh-runner relocated std build passed.
+  The std-source environment must be supplied to Cargo itself at invocation.
 - [ ] Audit shell utilities, dynamic libraries, loaders, compiler subprocesses,
   and build-time versus runtime dependencies. Packaged `rustc` and Cargo are
   currently Linux ELF binaries, not portable APE compiler implementations.
@@ -96,8 +115,10 @@ reproducible bootstrap inputs remain a separate task below.
 
 The local staged SDK archive is about 1.17 GB compressed and 3.75 GB uncompressed.
 The local migrated artifact adds the executable's three original resources, for
-14,268 unique paths. Repeated compiler-side SDK extraction remains a measured
-bottleneck, even though read-only status and the temporary ZIP copy are resolved.
+14,268 unique paths. The newer CI artifact contains 10,592 entries. Compiler
+commands still materialize their needed component files, but no longer repeat
+whole-SDK extraction inside `rust build` or retain owned directories on normal
+completion. Eliminating the remaining necessary materialization is separate work.
 
 ## 3. Portability and regression gates
 
