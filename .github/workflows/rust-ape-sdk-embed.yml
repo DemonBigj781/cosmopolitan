@@ -95,16 +95,16 @@ jobs:
           "$APE" rust cargo --version
           "$APE" machin build toolchain/machin_demo.mfl -o /tmp/machin-embed-regression.com
           /tmp/machin-embed-regression.com | grep -Fx 'Machin linked into Cosmopolitan APE'
-      - name: Verify native status without writable temporary storage
-        run: |
-          sudo python3 toolchain/tests/check_native_status.py \
-            --toolchain "$GITHUB_WORKSPACE/o/toolchain/compiler-payload/toolchain-with-sdk.com" \
-            --ape-loader /tmp/cosmocc/bin/ape-x86_64.elf
       - name: Prepare shared smoke-test artifact
         run: |
           cp /tmp/cosmocc/bin/ape-x86_64.elf o/toolchain/compiler-payload/
           cd o/toolchain/compiler-payload
           sha256sum toolchain-with-sdk.com ape-x86_64.elf > SHA256SUMS
+      - name: Verify native status without writable temporary storage
+        run: |
+          sudo python3 toolchain/tests/check_native_status.py \
+            --toolchain "$GITHUB_WORKSPACE/o/toolchain/compiler-payload/toolchain-with-sdk.com" \
+            --ape-loader "$GITHUB_WORKSPACE/o/toolchain/compiler-payload/ape-x86_64.elf"
       - uses: actions/upload-artifact@v4
         with:
           name: native-zip-toolchain

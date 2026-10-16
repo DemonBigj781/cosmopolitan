@@ -97,6 +97,8 @@ packaged resources, not compiler execution or cross-platform compatibility.
 On Linux, `tests/check_native_status.py` verifies full-payload status and invalid
 argument handling under a read-only filesystem and read-only `/tmp` with network
 access disabled. It requires `bwrap` and an explicit APE loader.
+Both input executables must be outside `/tmp`, which the check replaces with
+an empty read-only mount.
 
 <!-- markdownlint-disable-next-line MD013 -->
 Run `python3 toolchain/tests/check_native_status.py --toolchain /path/to/toolchain.com --ape-loader /path/to/ape-x86_64.elf`.
