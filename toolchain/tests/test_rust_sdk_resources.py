@@ -81,7 +81,7 @@ class RustSdkResourcesTest(unittest.TestCase):
                              (self.sdk / "generated" / f"linker-{arch}.bash").resolve())
         for name in ("libc", "errno"):
             path = config["patch"]["crates-io"][name]["path"]
-            self.assertEqual((config_path.parent / path).resolve(),
+            self.assertEqual((config_path.parent.parent / path).resolve(),
                              (self.sdk / "vendor/patches" / name).resolve())
         source = config["env"]["__CARGO_TESTS_ONLY_SRC_ROOT"]
         self.assertTrue(source["relative"])

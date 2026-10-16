@@ -1,7 +1,7 @@
 """Generate portable packaged SDK definitions from pinned Rust-APE templates.
 
-Cargo resolves executable/env paths from the config's grandparent, but [patch]
-paths from the config's own directory. No build-host paths are serialized.
+The pinned Cargo resolves these paths from the config's grandparent. Verify this
+with check_cargo_config_paths.py when upgrading Cargo; no host paths are serialized.
 """
 
 import json
@@ -49,7 +49,7 @@ def portable_rust_resources(sdk: Path) -> dict[str, tuple[bytes, int]]:
                     f'rustflags = {json.dumps(flags)}']
     config += targets
     config += ['\n[patch.crates-io]',
-               'libc = { path = "../vendor/patches/libc" }',
-               'errno = { path = "../vendor/patches/errno" }']
+               'libc = { path = "vendor/patches/libc" }',
+               'errno = { path = "vendor/patches/errno" }']
     resources["generated/cargo.cosmo.toml"] = (("\n".join(config) + "\n").encode(), 0o644)
     return resources

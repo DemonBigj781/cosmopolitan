@@ -46,6 +46,11 @@ jobs:
           # Include rustc's shared libraries and the host-target core/metadata libraries.
           cp -a "$SYSROOT/lib/." /tmp/rust-embedded/lib/
           /tmp/rust-embedded/bin/rustc --version
+      - name: Verify pinned Cargo resolves relocated configuration paths
+        run: |
+          python3 toolchain/tests/check_cargo_config_paths.py \
+            --cargo /tmp/rust-embedded/bin/cargo \
+            --rustc /tmp/rust-embedded/bin/rustc
       - name: Prepare patched Rust-APE SDK
         shell: bash
         run: |
