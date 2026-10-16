@@ -15,8 +15,9 @@ def portable_rust_resources(sdk: Path) -> dict[str, tuple[bytes, int]]:
     if not templates:
         raise ValueError("Rust-APE target templates are missing")
     resources = {}
-    config = ["[env]",
-              '__CARGO_TESTS_ONLY_SRC_ROOT = { value = "vendor/library", relative = true, force = true }']
+    # Cargo's private std-source override must be set in the invoking process;
+    # [env] entries only configure the subprocesses that Cargo launches.
+    config = ["[env]"]
     targets = []
     script_header = ('#!/bin/sh\nset -eu\n'
                      'sdk_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\n')

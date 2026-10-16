@@ -151,13 +151,18 @@ scripts derive their SDK root from their own location. Both architecture target
 JSON files use linker command names instead of build-machine absolute paths.
 
 For a materialized SDK, `generated/cargo.cosmo.toml` supplies relative linker,
-compiler, archiver, patched-library, and crate-patch paths. Use that config with
+compiler, archiver, and crate-patch paths. Use that config with
 the corresponding generated target JSON and the pinned nightly's existing
 `-Z json-target-spec` and `-Z build-std` options. Direct `rustc` users instead need
 the generated wrapper directory on `PATH`. The pinned Cargo resolves these
 linker/env and `[patch]` paths from the config's grandparent. This is checked
 directly with `check_cargo_config_paths.py` using offline Cargo metadata from an
 unrelated directory; revalidate that behavior when changing the Cargo version.
+The pinned Cargo reads its std-source override from its own environment, not
+from `[env]` configuration intended for child processes. Before a std build,
+set `__CARGO_TESTS_ONLY_SRC_ROOT` to the relocated SDK's `vendor/library` path.
+The configuration probe also verifies that source selection using Cargo's unit
+graph mode, without compiling any code.
 
 The hosted relocation job exports the Rust and patched SDK components from the
 same artifact onto a fresh runner, moves the root, and builds/runs a standard-

@@ -60,6 +60,24 @@ def main():
         if sdk.exists():
             raise RuntimeError("Original SDK unexpectedly exists")
         print("PASS: pinned Cargo resolves relocated patch paths from an unrelated directory")
+        # --unit-graph plans without compiling. An intentionally invalid std
+        # manifest reveals which source tree Cargo actually reads.
+        library = moved / "vendor/library"
+        library.mkdir()
+        (library / "Cargo.lock").write_text("version = 4\n")
+        (library / "Cargo.toml").write_text("invalid std manifest for path probe\n")
+        graph = [str(args.cargo.resolve()), "--config", str(moved / "generated/cargo.cosmo.toml"),
+                 "-Z", "unstable-options", "-Z", "json-target-spec", "-Z", "build-std=std",
+                 "build", "--unit-graph", "--offline", "--jobs", "1",
+                 "--target", str(moved / "generated/x86_64-unknown-linux-musl.json"),
+                 "--manifest-path", str(project / "Cargo.toml")]
+        env["__CARGO_TESTS_ONLY_SRC_ROOT"] = str(library)
+        result = subprocess.run(graph, cwd=root, env=env, text=True, capture_output=True)
+        manifests = (str(library / "Cargo.toml"),
+                     str((library / "Cargo.toml").relative_to(root)))
+        if result.returncode == 0 or not any(path in result.stderr for path in manifests):
+            raise RuntimeError("Cargo did not select the relocated std source: " + result.stderr)
+        print("PASS: pinned Cargo selects relocated std source without compiling")
 
 
 if __name__ == "__main__":

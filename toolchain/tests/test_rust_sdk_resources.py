@@ -83,9 +83,10 @@ class RustSdkResourcesTest(unittest.TestCase):
             path = config["patch"]["crates-io"][name]["path"]
             self.assertEqual((config_path.parent.parent / path).resolve(),
                              (self.sdk / "vendor/patches" / name).resolve())
-        source = config["env"]["__CARGO_TESTS_ONLY_SRC_ROOT"]
-        self.assertTrue(source["relative"])
-        self.assertEqual(source["value"], "vendor/library")
+        compiler = config["env"]["CC_x86_64_unknown_linux_musl"]
+        self.assertTrue(compiler["relative"])
+        self.assertEqual(compiler["value"], "generated/cc-x86_64.bash")
+        self.assertNotIn("__CARGO_TESTS_ONLY_SRC_ROOT", config["env"])
 
     def test_unknown_target_template_is_not_silently_rewritten(self):
         target = self.sdk / "targets/x86_64-unknown-linux-musl.json"

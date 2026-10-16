@@ -191,6 +191,7 @@ jobs:
           export PATH="$RUST/bin:$PATH"
           export RUSTC="$RUST/bin/rustc"
           export CARGO_HOME="$RUNNER_TEMP/relocated-cargo-home"
+          export __CARGO_TESTS_ONLY_SRC_ROOT="$SDK/vendor/library"
           unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS COSMO
           cargo --version
           rustc --version
