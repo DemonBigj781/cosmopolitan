@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${COSMOCC_ROOT:?Set COSMOCC_ROOT to extracted cosmocc SDK root}"
 : "${COSMOCC:?Set COSMOCC to compiler binary}"
+test -x "$COSMOCC_ROOT/bin/zipcopy" || { echo "Cosmopolitan zipcopy missing from SDK" >&2; exit 1; }
 mkdir -p o/toolchain
 "$COSMOCC" -O2 -c toolchain/ape_toolchain.c -o o/toolchain/dispatcher-embed.o
 "$COSMOCC" -O2 -c toolchain/embedded-sdk-driver.c -o o/toolchain/sdk-driver.o
@@ -29,7 +30,7 @@ fi
 # Use Cosmopolitan's own zlib build rules instead of compiling source ad hoc.
 # The archive includes the SIMD and header configuration needed by this fork.
 COSMO_MAKE="${COSMO_MAKE:-make}"
-"$COSMO_MAKE" -j2 o//third_party/zlib/zlib.a
+"$COSMO_MAKE" -j1 o//third_party/zlib/zlib.a
 ZLIB_ARCHIVE="o/third_party/zlib/zlib.a"
 if [ ! -f "$ZLIB_ARCHIVE" ]; then
   ZLIB_ARCHIVE="o//third_party/zlib/zlib.a"
@@ -37,7 +38,7 @@ fi
 test -f "$ZLIB_ARCHIVE" || { echo "Cosmopolitan zlib archive missing" >&2; exit 1; }
 # Build an ARM64 companion archive using Cosmopolitan's own Make rules.
 # The multiarch cosmocc wrapper requires matching x86-64 and ARM64 archives.
-"$COSMO_MAKE" -j2 MODE=aarch64 o/aarch64/third_party/zlib/zlib.a
+"$COSMO_MAKE" -j1 MODE=aarch64 o/aarch64/third_party/zlib/zlib.a
 ARM_ZLIB="o/aarch64/third_party/zlib/zlib.a"
 test -f "$ARM_ZLIB" || { echo "ARM64 zlib archive missing" >&2; exit 1; }
 mkdir -p o/third_party/zlib/.aarch64
@@ -47,16 +48,13 @@ cp "$ARM_ZLIB" o/third_party/zlib/.aarch64/zlib.a
   o/toolchain/native-zip.o o/toolchain/machin-build.o o/toolchain/rust-build.o ${MACHIN_OBJECT:+"$MACHIN_OBJECT"} "$ZLIB_ARCHIVE"
 mkdir -p o/toolchain/compiler-payload
 python3 - "$COSMOCC_ROOT" "${RUST_APE_SOURCE:-}" "${RUST_COMPILER_ROOT:-}" "${RUST_APE_SDK_ROOT:-}" <<'PY'
-import os,sys,zipfile,hashlib
+import os,sys,zipfile
 root=os.path.realpath(sys.argv[1])
 rust_source=os.path.realpath(sys.argv[2]) if sys.argv[2] else None
 rust_compiler=os.path.realpath(sys.argv[3]) if sys.argv[3] else None
 rust_ape_sdk=os.path.realpath(sys.argv[4]) if sys.argv[4] else None
 if rust_ape_sdk and not os.path.isfile(os.path.join(rust_ape_sdk,'generated','x86_64-unknown-linux-musl.json')):
     raise SystemExit('RUST_APE_SDK_ROOT must contain generated/x86_64-unknown-linux-musl.json')
-rust_ape_sdk=os.path.realpath(sys.argv[4]) if sys.argv[4] else None
-if rust_ape_sdk and not os.path.isfile(os.path.join(rust_ape_sdk,'generated','x86_64-unknown-linux-musl.json')):
-    raise SystemExit('RUST_APE_SDK_ROOT requires generated/x86_64-unknown-linux-musl.json')
 if rust_compiler and not os.path.isfile(os.path.join(rust_compiler,'bin','rustc')):
     raise SystemExit('RUST_COMPILER_ROOT must contain bin/rustc')
 if rust_source and not os.path.isfile(os.path.join(rust_source,'run.sh')):
@@ -67,7 +65,7 @@ for directory,_,names in os.walk(root):
     for name in names:
         path=os.path.join(directory,name)
         files.append(path)
-with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,allowZip64=True,strict_timestamps=False) as z:
+with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,allowZip64=False,strict_timestamps=False) as z:
     for path in sorted(files):
         arc=os.path.relpath(path,root)
         if os.path.islink(path):
@@ -113,24 +111,12 @@ with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,al
     if rust_ape_sdk:
         count=0
         for directory, dirs, names in os.walk(rust_ape_sdk):
-            dirs[:] = sorted(d for d in dirs if d not in ('.git','target','build','__pycache__'))
-            for name in sorted(names):
-                path=os.path.join(directory,name)
-                arc='rust-ape-sdk/'+os.path.relpath(path,rust_ape_sdk)
-                if os.path.islink(path):
-                    import stat
-                    info=zipfile.ZipInfo(arc)
-                    info.create_system=3
-                    info.external_attr=(stat.S_IFLNK | 0o777)<<16
-                    z.writestr(info,os.readlink(path))
-                elif os.path.isfile(path):
-                    z.write(path,arc)
-                count+=1
-        print('Patched Rust-APE SDK entries packaged:',count)
-    if rust_ape_sdk:
-        count=0
-        for directory, dirs, names in os.walk(rust_ape_sdk):
-            dirs[:] = sorted(d for d in dirs if d not in ('.git', 'target', '__pycache__'))
+            # Keep vendored source directories (including build modules).
+            # Only the SDK root's build outputs and download cache are disposable.
+            excluded={'.git','__pycache__'}
+            if directory == rust_ape_sdk:
+                excluded.update(('target','build','o','cache'))
+            dirs[:] = sorted(d for d in dirs if d not in excluded)
             for name in sorted(names):
                 path=os.path.join(directory,name)
                 arc='rust-ape-sdk/'+os.path.relpath(path,rust_ape_sdk)
@@ -145,43 +131,23 @@ with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,al
                 count+=1
         print('Patched Rust-APE SDK entries packaged:',count)
 with zipfile.ZipFile(out) as z:
+    names=z.namelist()
+    if len(names) != len(set(names)):
+        raise SystemExit('SDK archive contains duplicate paths')
     assert z.testzip() is None
     assert any(os.path.basename(n)=='cosmocc' for n in z.namelist())
     if rust_source:
         assert 'rust-ape/run.sh' in z.namelist()
     if rust_ape_sdk:
         assert 'rust-ape-sdk/generated/x86_64-unknown-linux-musl.json' in z.namelist()
-    if rust_ape_sdk:
-        assert 'rust-ape-sdk/generated/x86_64-unknown-linux-musl.json' in z.namelist()
 print('payload:',out,'files:',len(files),'bytes:',os.path.getsize(out))
 PY
-# Zip payload is appended to the existing APE; the APE runtime is expected
-# to ignore the trailing bytes. Verify that assumption with a smoke test.
-python3 - <<'PY'
-import os,struct,zipfile
-exe='o/toolchain/toolchain.com'
-archive='o/toolchain/compiler-payload/cosmocc-sdk.zip'
-out='o/toolchain/compiler-payload/toolchain-with-sdk.com'
-with open(out,'wb') as dst:
-    with open(exe,'rb') as src:
-        while data:=src.read(1024*1024): dst.write(data)
-    offset=dst.tell()
-    with open(archive,'rb') as src:
-        while data:=src.read(1024*1024): dst.write(data)
-    length=dst.tell()-offset
-    dst.write(struct.pack('<8sQQ',b'COSZIP01',offset,length))
-os.chmod(out,0o755)
-with open(out,'rb') as f:
-    f.seek(-24,2)
-    magic,start,size=struct.unpack('<8sQQ',f.read(24))
-    assert magic==b'COSZIP01'
-    f.seek(start)
-    with open(archive,'rb') as z:
-        assert f.read(size)==z.read()
-with zipfile.ZipFile(archive) as z:
-    assert z.testzip() is None
-print('PASS: standalone SDK archive and APE payload footer validated')
-PY
+# Preserve existing executable resources and use native absolute ZIP offsets.
+python3 toolchain/attach_sdk.py \
+  --executable o/toolchain/toolchain.com \
+  --sdk o/toolchain/compiler-payload/cosmocc-sdk.zip \
+  --output o/toolchain/compiler-payload/toolchain-with-sdk.com \
+  --zipcopy "$COSMOCC_ROOT/bin/zipcopy"
 o/toolchain/compiler-payload/toolchain-with-sdk.com selftest
 if [[ -n "$MACHIN_OBJECT" ]]; then
   o/toolchain/compiler-payload/toolchain-with-sdk.com machin-compiler --full toolchain/machin_demo.mfl > o/toolchain/combined-machin-demo.c
@@ -189,4 +155,4 @@ if [[ -n "$MACHIN_OBJECT" ]]; then
   grep -q 'main' o/toolchain/combined-machin-demo.c
   echo 'PASS: self-hosted Machin and compiler SDK share one APE'
 fi
-echo 'NOTE: compiler payload is packaged, not executable through an internal compiler driver.'
+echo 'NOTE: SDK commands extract temporary files and run compiler subprocesses; compiler portability is not implied.'

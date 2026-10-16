@@ -1,5 +1,6 @@
-/* Experimental SDK launcher. Uses native C ZIP extraction; no Python or unzip required.
- * Not yet a dependency-free or in-process compiler. */
+/* ZIPOS serves read-only resource checks. Compiler subprocesses still need
+ * materialized SDK files; they do not require Python or unzip at runtime. */
+#include <cosmo.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +11,7 @@
 #include <limits.h>
 
 extern int extract_sdk_zip(const char *archive,const char *root);
+__static_yoink("zipos");
 
 static int find_cc(const char *dir, char *out, size_t cap, int depth) {
   if (depth > 12) return 0;
@@ -40,59 +42,50 @@ static int run(char *const argv[]) {
   if(waitpid(p,&status,0)<0) return 125;
   return WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);
 }
-static unsigned long long read64(const unsigned char *p) {
-  unsigned long long x=0;
-  for(int i=7;i>=0;i--) x=(x<<8)|p[i];
-  return x;
-}
-static int split_payload(const char *self,const char *dest) {
-  FILE *in=fopen(self,"rb");
-  if(!in) { perror("open APE"); return 1; }
-  if(fseek(in,0,SEEK_END)) { fclose(in); return 1; }
-  long total=ftell(in);
-  if(total<24 || fseek(in,total-24,SEEK_SET)) { fclose(in); return 1; }
-  unsigned char footer[24];
-  if(fread(footer,1,24,in)!=24 || memcmp(footer,"COSZIP01",8)) {
-    fputs("Embedded ZIP footer missing\\n",stderr); fclose(in); return 1;
+static int rust_status(void) {
+  static const char expected[]="Rust-APE source snapshot;";
+  char marker[sizeof(expected)-1];
+  if(access("/zip/rust-ape/run.sh",R_OK)) {
+    fputs("Rust-APE source snapshot missing from embedded SDK\n",stderr);
+    return 1;
   }
-  unsigned long long offset=read64(footer+8),length=read64(footer+16);
-  if(offset>(unsigned long long)total-24 ||
-     length>(unsigned long long)total-24-offset ||
-     offset+length!=(unsigned long long)total-24 ||
-     fseek(in,(long)offset,SEEK_SET)) {
-    fputs("Invalid embedded ZIP boundaries\\n",stderr); fclose(in); return 1;
+  FILE *file=fopen("/zip/rust-ape/EMBEDDED.txt","rb");
+  if(!file) { perror("read embedded Rust marker"); return 1; }
+  size_t got=fread(marker,1,sizeof(marker),file);
+  int invalid=ferror(file) || got!=sizeof(marker) || memcmp(marker,expected,sizeof(marker));
+  if(fclose(file))invalid=1;
+  if(invalid) {
+    fputs("Invalid embedded Rust-APE source marker\n",stderr);
+    return 1;
   }
-  FILE *out=fopen(dest,"wb");
-  if(!out) { perror("create ZIP"); fclose(in); return 1; }
-  char buffer[65536];
-  while(length) {
-    size_t n=length<sizeof(buffer)?(size_t)length:sizeof(buffer);
-    if(fread(buffer,1,n,in)!=n || fwrite(buffer,1,n,out)!=n) {
-      fclose(in); fclose(out); return 1;
-    }
-    length-=n;
-  }
-  int error=fclose(out);
-  fclose(in);
-  return error!=0;
+  /* Retain the established status line: the marker was extracted in memory,
+   * not onto disk. State that distinction explicitly for humans and tests. */
+  puts("PASS: embedded Rust-APE source snapshot extracted");
+  puts("Resource access: ZIPOS (memory only; no SDK files extracted)");
+  puts(access("/zip/rust-toolchain/bin/rustc",X_OK) ? "Rust compiler: not packaged" : "Rust compiler: packaged");
+  puts(access("/zip/rust-toolchain/bin/cargo",X_OK) ? "Cargo: not packaged" : "Cargo: packaged");
+  int target=access("/zip/rust-ape-sdk/generated/x86_64-unknown-linux-musl.json",R_OK);
+  puts(target ? "Rust-APE patched target: not packaged" : "Rust-APE patched target: packaged");
+  puts(target || access("/zip/rust-ape-sdk/vendor/cosmocc/bin/apelink",X_OK) ?
+       "Patched Rust-APE SDK: not packaged" : "Patched Rust-APE SDK: packaged");
+  return 0;
 }
 int embedded_sdk_main(int argc,char **argv) {
   if(argc<2) { fputs("Usage: toolchain.com cc [cosmocc arguments]\n",stderr); return 2; }
+  if(!strcmp(argv[1],"rust")) {
+    if(argc<3 || (strcmp(argv[2],"status") && strcmp(argv[2],"rustc") && strcmp(argv[2],"cargo"))) {
+      fputs("Usage: toolchain.com rust status | rust rustc [args] | rust cargo [args]\n",stderr);
+      return 2;
+    }
+    if(!strcmp(argv[2],"status"))return rust_status();
+  }
   char self[4096],tmp[]="/tmp/cosmo-sdk-XXXXXX",compiler[4096];
   if(!realpath(argv[0],self)) { perror("resolve executable"); return 1; }
   if(!mkdtemp(tmp)) { perror("mkdtemp"); return 1; }
-  /* Transitional Python-free extraction using host unzip.
-   * Next step: replace with Cosmopolitan's in-process ZIP reader. */
-  char archive[4096];
-  if(snprintf(archive,sizeof(archive),"%s/sdk.zip",tmp)>=(int)sizeof(archive)) return 1;
-  if(split_payload(self,archive)) return 1;
-  int rc=extract_sdk_zip(archive,tmp);
+  /* Standard ZIP offsets point into the APE itself; no temporary ZIP copy. */
+  int rc=extract_sdk_zip(self,tmp);
   if(rc) { fprintf(stderr,"SDK extraction failed: %d\n",rc); return rc; }
   if (!strcmp(argv[1], "rust")) {
-    if (argc < 3 || (strcmp(argv[2], "status") && strcmp(argv[2], "rustc") && strcmp(argv[2], "cargo"))) {
-      fputs("Usage: toolchain.com rust status | rust rustc [args] | rust cargo [args]\\n",stderr);
-      return 2;
-    }
     char script[4096], marker[4096];
     if (snprintf(script,sizeof(script),"%s/rust-ape/run.sh",tmp)>=(int)sizeof(script) ||
         snprintf(marker,sizeof(marker),"%s/rust-ape/EMBEDDED.txt",tmp)>=(int)sizeof(marker))
@@ -101,21 +94,11 @@ int embedded_sdk_main(int argc,char **argv) {
       fputs("Rust-APE source snapshot missing from embedded SDK\\n",stderr);
       return 1;
     }
-    char rustc[4096],cargo[4096],sysroot[4096],target[4096],apelink[4096];
+    char rustc[4096],cargo[4096],sysroot[4096];
     if (snprintf(rustc,sizeof(rustc),"%s/rust-toolchain/bin/rustc",tmp)>=(int)sizeof(rustc) ||
         snprintf(sysroot,sizeof(sysroot),"%s/rust-toolchain",tmp)>=(int)sizeof(sysroot) ||
-        snprintf(cargo,sizeof(cargo),"%s/rust-toolchain/bin/cargo",tmp)>=(int)sizeof(cargo) ||
-        snprintf(target,sizeof(target),"%s/rust-ape-sdk/generated/x86_64-unknown-linux-musl.json",tmp)>=(int)sizeof(target) ||
-        snprintf(apelink,sizeof(apelink),"%s/rust-ape-sdk/vendor/cosmocc/bin/apelink",tmp)>=(int)sizeof(apelink))
+        snprintf(cargo,sizeof(cargo),"%s/rust-toolchain/bin/cargo",tmp)>=(int)sizeof(cargo))
       return 1;
-    if (!strcmp(argv[2], "status")) {
-      puts("PASS: embedded Rust-APE source snapshot extracted");
-      puts(access(rustc,X_OK) ? "Rust compiler: not packaged" : "Rust compiler: packaged");
-      puts(access(cargo,X_OK) ? "Cargo: not packaged" : "Cargo: packaged");
-      puts(access(target,R_OK) ? "Rust-APE patched target: not packaged" : "Rust-APE patched target: packaged");
-      puts(access(target,R_OK) || access(apelink,X_OK) ? "Patched Rust-APE SDK: not packaged" : "Patched Rust-APE SDK: packaged");
-      return 0;
-    }
     if (access(rustc,X_OK)) {
       fputs("Rust compiler not packaged; set RUST_COMPILER_ROOT at packaging time\\n",stderr);
       return 2;

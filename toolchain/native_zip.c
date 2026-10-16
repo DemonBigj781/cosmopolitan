@@ -38,7 +38,7 @@ static int safe(const char *s){
 /* Validate relative symlink targets lexically against the SDK root.
  * name is the link location relative to root; target may use .. within root. */
 static int safe_link_target(const char *name,const char *target){
-  if(!*target||*target=='/'||strchr(target,'\\\\'))return 0;
+  if(!*target||*target=='/'||strchr(target,'\\'))return 0;
   int depth=0;
   for(const char *p=name;*p;){
     const char *q=strchr(p,'/');if(!q)break;

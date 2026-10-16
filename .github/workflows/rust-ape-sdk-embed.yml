@@ -24,7 +24,7 @@ jobs:
       - name: Install Cosmopolitan build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y make
+          sudo apt-get install -y make bubblewrap
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
@@ -95,3 +95,55 @@ jobs:
           "$APE" rust cargo --version
           "$APE" machin build toolchain/machin_demo.mfl -o /tmp/machin-embed-regression.com
           /tmp/machin-embed-regression.com | grep -Fx 'Machin linked into Cosmopolitan APE'
+      - name: Verify native status without writable temporary storage
+        run: |
+          sudo python3 toolchain/tests/check_native_status.py \
+            --toolchain "$GITHUB_WORKSPACE/o/toolchain/compiler-payload/toolchain-with-sdk.com" \
+            --ape-loader /tmp/cosmocc/bin/ape-x86_64.elf
+      - name: Prepare shared smoke-test artifact
+        run: |
+          cp /tmp/cosmocc/bin/ape-x86_64.elf o/toolchain/compiler-payload/
+          cd o/toolchain/compiler-payload
+          sha256sum toolchain-with-sdk.com ape-x86_64.elf > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-zip-toolchain
+          compression-level: 0
+          retention-days: 7
+          path: |
+            o/toolchain/compiler-payload/toolchain-with-sdk.com
+            o/toolchain/compiler-payload/ape-x86_64.elf
+            o/toolchain/compiler-payload/SHA256SUMS
+  compiler-smoke:
+    needs: package
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [c, cpp, rust, machin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-zip-toolchain
+          path: artifact
+      - name: Verify shared artifact
+        run: |
+          cd artifact
+          sha256sum -c SHA256SUMS
+          chmod +x toolchain-with-sdk.com ape-x86_64.elf
+      - name: Compile and execute ${{ matrix.language }}
+        run: |
+          python3 toolchain/tests/smoke_compilers.py \
+            --toolchain artifact/toolchain-with-sdk.com \
+            --ape-loader artifact/ape-x86_64.elf \
+            --output-dir "o/smoke-${{ matrix.language }}" \
+            --language "${{ matrix.language }}"
+          cd artifact
+          sha256sum -c SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compiler-smoke-${{ matrix.language }}
+          retention-days: 7
+          path: o/smoke-${{ matrix.language }}

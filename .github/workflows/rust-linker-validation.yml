@@ -36,6 +36,8 @@ jobs:
           COSMOCC="$COSMOCC" COSMOCC_ROOT=/tmp/cosmocc MACHIN=/tmp/machin-compiler MACHIN_SRC=/tmp/machin bash toolchain/package-compiler-sdk.sh
       - name: Install Rust compiler
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
       - name: Compile Rust no_std and link with embedded Cosmopolitan
         shell: bash
         run: |
@@ -62,6 +64,10 @@ jobs:
           rustc --version
           rustc --edition=2024 --crate-type=lib --emit=obj -C panic=abort -C opt-level=2 math.rs -o math.o
           test -s math.o
+          mkdir -p .aarch64
+          rustc --edition=2024 --target aarch64-unknown-linux-gnu --crate-type=lib --emit=obj -C panic=abort -C opt-level=2 math.rs -o .aarch64/math.o
+          test -s .aarch64/math.o
+          file math.o .aarch64/math.o
           "$APE" cc -c main.c -o main.o
           "$APE" cc main.o math.o -o rust-c-ape.com
           output="$(./rust-c-ape.com)" || { echo 'FAIL: linked Rust APE exited nonzero' >&2; exit 1; }
@@ -83,4 +89,5 @@ jobs:
             echo 'FAIL: unresolved Rust/C symbol unexpectedly linked' >&2
             exit 1
           fi
+          grep -F 'missing_rust_symbol' missing.log
           echo 'PASS: unresolved symbol correctly rejected'

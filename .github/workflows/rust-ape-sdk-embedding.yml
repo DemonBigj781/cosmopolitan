@@ -164,7 +164,7 @@ jobs:
           test "$output" = 'RUST ONE COMMAND PASS' || { echo 'FAIL: Rust one-command output mismatch' >&2; exit 1; }
           echo 'PASS: one-command Rust to APE'
       - name: Compile C using SDK packaged inside APE
-        # Verify the ZIP footer is consumed by the updated C driver.
+        # Verify the driver reads the native ZIP directly from the APE.
         run: |
           printf '#include <stdio.h>\nint main(void){puts("embedded compiler PASS");return 0;}\n' > /tmp/embedded-test.c
           # Block Python explicitly without hiding compiler dependencies.
