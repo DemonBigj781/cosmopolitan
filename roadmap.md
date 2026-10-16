@@ -82,8 +82,11 @@ reproducible bootstrap inputs remain a separate task below.
   CI using the same downloaded artifact in separate jobs.
 - [ ] Avoid redundant whole-SDK extraction for compiler subprocesses; explicitly
   determine what must exist on disk and manage temporary-file lifetimes.
+  Component-selective extraction, process-local Rust/C reuse, and owned-directory
+  cleanup are implemented; full hosted validation is pending.
 - [ ] Make packaged Rust target/linker definitions relocatable at their source.
-  Current generated definitions contain absolute build-machine paths.
+  A source-template renderer now emits portable packaged definitions; the fresh-
+  runner relocation and standard-library build gate is pending.
 - [ ] Audit shell utilities, dynamic libraries, loaders, compiler subprocesses,
   and build-time versus runtime dependencies. Packaged `rustc` and Cargo are
   currently Linux ELF binaries, not portable APE compiler implementations.

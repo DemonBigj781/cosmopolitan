@@ -21,9 +21,9 @@ Output: `o/toolchain/toolchain.com`.
 ## SDK packaging regression tests
 
 Run `python3 -m unittest discover -s toolchain/tests -p 'test_*.py' -v` from the
-repository root. This requires a host C compiler (`CC`, default `cc`) and host
-zlib development headers/library. Tests compile one temporary host executable
-serially; `TMPDIR` controls its temporary location.
+repository root. This requires Python 3.11+, a host C compiler (`CC`, default `cc`),
+and host zlib development headers/library. Tests compile small temporary host
+harnesses serially; `TMPDIR` controls their temporary location.
 
 The tests execute the packaging script's actual Python archive-generation block
 with small fixture SDKs, then exercise the production native ZIP extractor
@@ -44,6 +44,29 @@ The packaging script uses single-job Make invocations. Compiler commands still
 extract SDK files and invoke subprocesses, but read the ZIP directly from the
 APE without making an intermediate ZIP copy. `rust status` uses ZIPOS and does
 not extract files. Packaging a host compiler does not make it an APE compiler.
+
+## Process-scoped SDK resources
+
+C/C++ commands materialize only the base C SDK. Host `rustc`/Cargo commands
+materialize only `rust-toolchain/`; source markers and capability checks stay in
+ZIPOS. The patched SDK and source snapshot are not copied merely to run a host
+compiler. `rust build` uses the SDK driver in-process, materializing Rust once
+and C once instead of invoking four independently extracting copies of the APE.
+
+`TMPDIR` selects the parent of private, invocation-owned temporary directories.
+The parent must exist. SDK files and Rust/Machin intermediates are removed on
+normal command completion, including compiler failures. Cleanup does not follow
+symlinks, refuses a replacement root, and reports errors rather than silently
+ignoring them. Abrupt termination such as SIGKILL can still leave scratch data;
+there is no sweep of older directories and no persistent SDK cache. Small loader
+caches owned by upstream tools are outside this cleanup contract.
+
+Extraction rejects existing leaf files/symlinks and symlink parent directories.
+Component-local aliases must stay within the selected component. Compiler output
+files requested outside the scratch directories are retained.
+Paths printed by compiler introspection refer to invocation-local SDK files;
+external build systems requiring persistent SDK paths must use an explicitly
+materialized SDK rather than depending on previously leaked temporary trees.
 
 ## Independent compiler smoke tests
 
@@ -66,9 +89,11 @@ The output directory must be new. Each language keeps its generated executable,
 `build.log`, and `run.log`; `summary.json` records independent results. Languages
 are tested serially, but compiler-internal parallelism must be constrained
 separately when required (stock Cosmocc launches architecture workers in parallel).
-The current compiler paths repeatedly extract large SDKs without cleanup; use
-an isolated, disk-backed temporary filesystem for full-payload testing rather
-than exhausting a RAM-backed `/tmp`.
+Each probe uses its own temporary parent and also checks component materialization
+counts and absence of owned temporary directories after completion. Use a
+disk-backed temporary filesystem if the selected SDK exceeds available RAM.
+`check_sdk_lifecycle.py` separately verifies cleanup after a real compiler error
+while preserving unrelated caller files.
 
 `test_smoke_runner.py` tests reporting and rejection of ordinary ELF output using
 mocks. Those unit tests are not evidence that a real compiler works; run the
@@ -116,6 +141,31 @@ This separate probe preceded the production attachment/status migration above.
 The in-tree `tool/build/zipcopy.c` checks record counts and an `INT_MAX` output
 size limit. Migration must also preserve access to any pre-existing embedded
 resources; simply appending another archive is not a resource-merge strategy.
+
+## Relocatable packaged Rust SDK definitions
+
+`rust_sdk_resources.py` renders the packaged `generated/` definitions directly
+from the pinned SDK's target templates. It does not modify the upstream snapshot
+or perform runtime repair of extracted files. Linker, archiver, and C/C++ wrapper
+scripts derive their SDK root from their own location. Both architecture target
+JSON files use linker command names instead of build-machine absolute paths.
+
+For a materialized SDK, `generated/cargo.cosmo.toml` supplies relative linker,
+compiler, archiver, patched-library, and crate-patch paths. Use that config with
+the corresponding generated target JSON and the pinned nightly's existing
+`-Z json-target-spec` and `-Z build-std` options. Direct `rustc` users instead need
+the generated wrapper directory on `PATH`. Cargo's linker/env paths are relative
+to the config's grandparent; its `[patch]` paths are relative to the config file
+directory. The generator deliberately accounts for both rules.
+
+The hosted relocation job exports the Rust and patched SDK components from the
+same artifact onto a fresh runner, moves the root, and builds/runs a standard-
+library application with no original SDK directory present. This is separate
+from `rust build`'s current `no_std` interface and does not change `rust cargo`
+into an implicit Cosmopolitan standard-library build command. The Rust compiler
+itself remains a Linux-host binary; third-party tools retain their own path and
+platform restrictions. Registry dependencies for a fresh std build are not yet
+bundled for offline use.
 
 ## Next stages
 

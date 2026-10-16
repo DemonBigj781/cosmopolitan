@@ -11,6 +11,7 @@ mkdir -p o/toolchain
 "$COSMOCC" -O2 -c toolchain/native_zip.c -I. -o o/toolchain/native-zip.o
 "$COSMOCC" -O2 -c toolchain/machin_build.c -o o/toolchain/machin-build.o
 "$COSMOCC" -O2 -c toolchain/rust_build.c -o o/toolchain/rust-build.o
+"$COSMOCC" -O2 -c toolchain/tempdir.c -o o/toolchain/tempdir.o
 # Optional self-hosted Machin compiler linked into the SAME APE.
 if [[ -n "${MACHIN:-}" && -n "${MACHIN_SRC:-}" ]]; then
   sources=(selfhost/lex.src selfhost/parse.src selfhost/check.src
@@ -45,10 +46,14 @@ mkdir -p o/third_party/zlib/.aarch64
 cp "$ARM_ZLIB" o/third_party/zlib/.aarch64/zlib.a
 "$COSMOCC" -O2 -o o/toolchain/toolchain.com \
   o/toolchain/dispatcher-embed.o o/toolchain/sdk-driver.o \
-  o/toolchain/native-zip.o o/toolchain/machin-build.o o/toolchain/rust-build.o ${MACHIN_OBJECT:+"$MACHIN_OBJECT"} "$ZLIB_ARCHIVE"
+  o/toolchain/native-zip.o o/toolchain/machin-build.o o/toolchain/rust-build.o \
+  o/toolchain/tempdir.o ${MACHIN_OBJECT:+"$MACHIN_OBJECT"} "$ZLIB_ARCHIVE"
 mkdir -p o/toolchain/compiler-payload
-python3 - "$COSMOCC_ROOT" "${RUST_APE_SOURCE:-}" "${RUST_COMPILER_ROOT:-}" "${RUST_APE_SDK_ROOT:-}" <<'PY'
-import os,sys,zipfile
+python3 - "$COSMOCC_ROOT" "${RUST_APE_SOURCE:-}" "${RUST_COMPILER_ROOT:-}" "${RUST_APE_SDK_ROOT:-}" "$PWD/toolchain" <<'PY'
+import os,sys,zipfile,stat
+from pathlib import Path
+sys.path.insert(0,sys.argv[5])
+from rust_sdk_resources import portable_rust_resources
 root=os.path.realpath(sys.argv[1])
 rust_source=os.path.realpath(sys.argv[2]) if sys.argv[2] else None
 rust_compiler=os.path.realpath(sys.argv[3]) if sys.argv[3] else None
@@ -69,7 +74,6 @@ with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,al
     for path in sorted(files):
         arc=os.path.relpath(path,root)
         if os.path.islink(path):
-            import stat
             info=zipfile.ZipInfo(arc)
             info.create_system=3
             info.external_attr=(stat.S_IFLNK | 0o777)<<16
@@ -99,7 +103,6 @@ with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,al
                 path=os.path.join(directory,name)
                 arc='rust-toolchain/'+os.path.relpath(path,rust_compiler)
                 if os.path.islink(path):
-                    import stat
                     info=zipfile.ZipInfo(arc)
                     info.create_system=3
                     info.external_attr=(stat.S_IFLNK | 0o777)<<16
@@ -109,6 +112,7 @@ with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,al
                 count+=1
         print('Rust compiler SDK entries packaged:',count)
     if rust_ape_sdk:
+        generated=portable_rust_resources(Path(rust_ape_sdk))
         count=0
         for directory, dirs, names in os.walk(rust_ape_sdk):
             # Keep vendored source directories (including build modules).
@@ -119,9 +123,11 @@ with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,al
             dirs[:] = sorted(d for d in dirs if d not in excluded)
             for name in sorted(names):
                 path=os.path.join(directory,name)
-                arc='rust-ape-sdk/'+os.path.relpath(path,rust_ape_sdk)
+                relative=os.path.relpath(path,rust_ape_sdk)
+                if relative in generated:
+                    continue
+                arc='rust-ape-sdk/'+relative
                 if os.path.islink(path):
-                    import stat
                     info=zipfile.ZipInfo(arc)
                     info.create_system=3
                     info.external_attr=(stat.S_IFLNK | 0o777)<<16
@@ -129,6 +135,12 @@ with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,al
                 elif os.path.isfile(path):
                     z.write(path,arc)
                 count+=1
+        for name,(data,mode) in sorted(generated.items()):
+            info=zipfile.ZipInfo('rust-ape-sdk/'+name)
+            info.create_system=3
+            info.external_attr=(stat.S_IFREG | mode)<<16
+            z.writestr(info,data)
+            count+=1
         print('Patched Rust-APE SDK entries packaged:',count)
 with zipfile.ZipFile(out) as z:
     names=z.namelist()

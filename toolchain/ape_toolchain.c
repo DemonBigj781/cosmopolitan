@@ -4,6 +4,7 @@
 extern int machin_build_main(int argc, char **argv) __attribute__((weak));
 extern int rust_build_main(int argc, char **argv) __attribute__((weak));
 extern int embedded_sdk_main(int argc, char **argv) __attribute__((weak));
+extern int embedded_sdk_cleanup(void) __attribute__((weak));
 extern int machin_entry(int argc, char **argv) __attribute__((weak));
 
 static void usage(const char *name) {
@@ -25,7 +26,7 @@ static void usage(const char *name) {
   puts("  devices       Reserved for WebGPU/CPU discovery");
 }
 
-int main(int argc, char **argv) {
+static int dispatch(int argc, char **argv) {
   if (argc < 2 || !strcmp(argv[1], "--help") || !strcmp(argv[1], "help")) {
     usage(argv[0]);
     return 0;
@@ -62,4 +63,10 @@ int main(int argc, char **argv) {
   fprintf(stderr, "Unknown command: %s\n", argv[1]);
   usage(argv[0]);
   return 2;
+}
+
+int main(int argc, char **argv) {
+  int rc=dispatch(argc,argv);
+  if(embedded_sdk_cleanup && embedded_sdk_cleanup() && !rc)rc=1;
+  return rc;
 }

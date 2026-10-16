@@ -1,6 +1,7 @@
 """Exercise the actual packaging heredoc and native extractor with small SDKs."""
 
 import copy
+import json
 import os
 from pathlib import Path
 import shlex
@@ -53,6 +54,11 @@ class SdkPackagingTest(unittest.TestCase):
         self.write(self.compiler, "bin/cargo", "cargo", executable=True)
         self.write(self.compiler, "lib/librustc_driver.so", "compiler library")
         self.write(self.sdk, "generated/x86_64-unknown-linux-musl.json", "{}")
+        for arch in ("x86_64", "aarch64"):
+            name = f"{arch}-unknown-linux-musl.json"
+            template = ROOT / "third_party/rust_ape/upstream/targets" / name
+            self.write(self.sdk, "targets/" + name, template.read_text())
+        self.write(self.sdk, "scripts/gcc-linker-wrapper.bash", "#!/bin/sh\nexit 0\n", executable=True)
         self.write(self.sdk, "vendor/cosmocc/bin/apelink", "linker", executable=True)
         self.write(self.sdk, "vendor/cosmocc/libexec/gcc/aarch64-linux-cosmo/14.1.0/as",
                    "assembler", executable=True)
@@ -80,6 +86,7 @@ class SdkPackagingTest(unittest.TestCase):
         args = [str(self.cosmocc)]
         args += ([str(self.source), str(self.compiler), str(self.sdk)]
                  if with_rust else ["", "", ""])
+        args.append(str(ROOT / "toolchain"))
         return subprocess.run(
             [sys.executable, "-c", self.packager, *args],
             cwd=self.workdir, text=True, capture_output=True,
@@ -121,6 +128,68 @@ class SdkPackagingTest(unittest.TestCase):
             self.assertEqual(archive.getinfo("lib/libc.a").date_time[0], 1980)
             self.assertTrue(archive.getinfo("bin/cosmocc").external_attr >> 16 & 0o111)
 
+    def test_packaged_rust_definitions_are_generated_without_host_paths(self):
+        old = self.sdk / "generated/x86_64-unknown-linux-musl.json"
+        old.write_text(json.dumps({"linker": str(self.sdk / "old-linker")}))
+        original = old.read_bytes()
+        with self.package() as archive:
+            for arch in ("x86_64", "aarch64"):
+                path = f"rust-ape-sdk/generated/{arch}-unknown-linux-musl.json"
+                target = json.loads(archive.read(path))
+                self.assertEqual(target["linker"], f"linker-{arch}.bash")
+            for name in archive.namelist():
+                if name.startswith("rust-ape-sdk/generated/"):
+                    self.assertNotIn(str(self.sdk).encode(), archive.read(name), name)
+            self.assertIn("rust-ape-sdk/generated/cargo.cosmo.toml", archive.namelist())
+        self.assertEqual(old.read_bytes(), original)
+
+    def test_selected_rust_component_rejects_cross_component_symlink(self):
+        with self.package():
+            pass
+        with zipfile.ZipFile(self.archive, "a") as archive:
+            info = zipfile.ZipInfo("rust-toolchain/bin/foreign-compiler")
+            info.create_system = 3
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            archive.writestr(info, "../../bin/cosmocc")
+        destination = self.workdir / "cross-component"
+        destination.mkdir()
+        result = subprocess.run([str(self.extractor), str(self.archive), str(destination), "rust"],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("symlink rejected", result.stderr)
+
+    def test_extraction_does_not_write_through_directory_symlink(self):
+        outside = self.workdir / "outside"
+        outside.mkdir()
+        marker = outside / "keep.txt"
+        marker.write_text("preserve")
+        with zipfile.ZipFile(self.archive, "w") as archive:
+            for name, target in (("a", "."), ("b", "a/../outside")):
+                info = zipfile.ZipInfo(name)
+                info.create_system = 3
+                info.external_attr = (stat.S_IFLNK | 0o777) << 16
+                archive.writestr(info, target)
+            archive.writestr("b/keep.txt", "must not overwrite")
+        destination = self.workdir / "symlink-parents"
+        destination.mkdir()
+        result = subprocess.run([str(self.extractor), str(self.archive), str(destination), "c"],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(marker.read_text(), "preserve")
+
+    def test_extraction_refuses_existing_leaf_symlinks(self):
+        marker = self.workdir / "valuable.txt"
+        marker.write_text("preserve")
+        destination = self.workdir / "leaf-link"
+        destination.mkdir()
+        (destination / "alias").symlink_to(marker)
+        with zipfile.ZipFile(self.archive, "w") as archive:
+            archive.writestr("alias", "must not overwrite")
+        result = subprocess.run([str(self.extractor), str(self.archive), str(destination), "c"],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(marker.read_text(), "preserve")
+
     def test_native_extractor_accepts_packaged_sdk_symlink(self):
         with self.package():
             pass
@@ -140,6 +209,56 @@ class SdkPackagingTest(unittest.TestCase):
         with self.package(with_rust=False) as archive:
             self.assertEqual(set(archive.namelist()),
                              {"bin/cosmocc", "include/stdio.h", "lib/libc.a"})
+
+    def test_c_extraction_does_not_materialize_rust_trees(self):
+        with self.package():
+            pass
+        destination = self.workdir / "c-only"
+        destination.mkdir()
+        result = subprocess.run([str(self.extractor), str(self.archive), str(destination), "c"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((destination / "bin/cosmocc").read_text(), "compiler")
+        for name in ("rust-ape", "rust-toolchain", "rust-ape-sdk"):
+            self.assertFalse((destination / name).exists(), name)
+
+    def test_rust_extraction_does_not_materialize_c_or_patched_sdk(self):
+        with self.package():
+            pass
+        destination = self.workdir / "rust-only"
+        destination.mkdir()
+        result = subprocess.run([str(self.extractor), str(self.archive), str(destination), "rust"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((destination / "rust-toolchain/bin/rustc").read_text(), "rust compiler")
+        for name in ("bin", "include", "rust-ape", "rust-ape-sdk"):
+            self.assertFalse((destination / name).exists(), name)
+
+    def test_components_can_be_materialized_once_into_same_directory(self):
+        with self.package():
+            pass
+        destination = self.workdir / "combined"
+        destination.mkdir()
+        for component in ("rust", "c"):
+            result = subprocess.run([str(self.extractor), str(self.archive), str(destination), component],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((destination / "bin/cosmocc").is_file())
+        self.assertTrue((destination / "rust-toolchain/bin/rustc").is_file())
+        self.assertFalse((destination / "rust-ape-sdk").exists())
+
+    def test_patched_sdk_export_preserves_only_its_namespace(self):
+        with self.package():
+            pass
+        destination = self.workdir / "ape-only"
+        destination.mkdir()
+        result = subprocess.run([str(self.extractor), str(self.archive), str(destination), "ape"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual({p.name for p in destination.iterdir()}, {"rust-ape-sdk"})
+        link = destination / "rust-ape-sdk/vendor/cosmocc/bin/aarch64-linux-cosmo-as"
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(link.read_text(), "assembler")
 
     def test_native_extractor_reads_absolute_offsets_inside_executable(self):
         executable = self.workdir / "embedded.com"

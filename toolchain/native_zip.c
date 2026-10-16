@@ -7,21 +7,39 @@
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include "third_party/zlib/zlib.h"
+#include "sdk_resources.h"
+
+static int under(const char *name,const char *directory){
+  size_t n=strlen(directory);
+  return !strncmp(name,directory,n) && (!name[n] || name[n]=='/');
+}
+static int selected(const char *name,enum SdkComponent component){
+  if(component==SDK_ALL)return 1;
+  if(component==SDK_RUST)return under(name,"rust-toolchain");
+  if(component==SDK_RUST_APE)return under(name,"rust-ape-sdk");
+  return !under(name,"rust-toolchain") && !under(name,"rust-ape-sdk") &&
+         !under(name,"rust-ape") && strcmp(name,".cosmo") && strncmp(name,".symtab.",8);
+}
 
 static uint16_t u16(const unsigned char *p){return (uint16_t)p[0]|((uint16_t)p[1]<<8);}
 static uint32_t u32(const unsigned char *p){return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
 static int read_at(FILE *f,uint64_t off,void *p,size_t n){
   return off<=LONG_MAX && !fseek(f,(long)off,SEEK_SET) && fread(p,1,n,f)==n;
 }
-static int dirs(const char *path){
+static int dirs(const char *path,const char *root){
   char b[4096]; size_t n=strlen(path);
   if(n>=sizeof(b))return -1;
   memcpy(b,path,n+1);
-  for(char *p=b+1;*p;p++)if(*p=='/'){
-    *p=0;if(mkdir(b,0700)&&errno!=EEXIST)return -1;*p='/';
+  for(char *p=b+strlen(root)+1;*p;p++)if(*p=='/'){
+    *p=0;
+    if(mkdir(b,0700)&&errno!=EEXIST)return -1;
+    struct stat st;
+    if(lstat(b,&st)||!S_ISDIR(st.st_mode)){errno=ENOTDIR;return -1;}
+    *p='/';
   }
   return 0;
 }
@@ -54,6 +72,29 @@ static int safe_link_target(const char *name,const char *target){
   }
   return 1;
 }
+static int link_in_component(const char *name,const char *target,enum SdkComponent component){
+  if(component==SDK_ALL)return 1;
+  char joined[4096],resolved[4096]="";
+  const char *slash=strrchr(name,'/');
+  size_t parent=slash?(size_t)(slash-name)+1:0;
+  if(parent+strlen(target)>=sizeof(joined))return 0;
+  memcpy(joined,name,parent);
+  strcpy(joined+parent,target);
+  char *save;
+  for(char *part=strtok_r(joined,"/",&save);part;part=strtok_r(NULL,"/",&save)){
+    if(!strcmp(part,"."))continue;
+    if(!strcmp(part,"..")){
+      char *end=strrchr(resolved,'/');
+      if(end)*end=0;else resolved[0]=0;
+    }else{
+      size_t n=strlen(resolved),m=strlen(part);
+      if(n+m+2>sizeof(resolved))return 0;
+      if(n)resolved[n++]='/';
+      memcpy(resolved+n,part,m+1);
+    }
+  }
+  return selected(resolved,component);
+}
 static int inflate_entry(FILE *f,uint64_t off,uint32_t clen,uint32_t ulen,
                          int method,unsigned char **result){
   if(ulen>512*1024*1024u)return -1;
@@ -75,7 +116,8 @@ static int inflate_entry(FILE *f,uint64_t off,uint32_t clen,uint32_t ulen,
   if(!ok){free(out);return -1;}
   out[ulen]=0;*result=out;return 0;
 }
-int extract_sdk_zip(const char *archive,const char *root){
+int extract_sdk_zip(const char *archive,const char *root,enum SdkComponent component){
+  if(component<SDK_C || component>SDK_ALL)return -1;
   FILE *f=fopen(archive,"rb");if(!f)return -1;
   int rc=-1;unsigned char end[22],head[46],local[30];
   if(fseek(f,0,SEEK_END))goto done;
@@ -99,25 +141,29 @@ int extract_sdk_zip(const char *archive,const char *root){
     char name[2048],path[4096];
     if(!read_at(f,pos+46,name,nl))goto done;
     name[nl]=0;
-    if(!safe(name)||snprintf(path,sizeof(path),"%s/%s",root,name)>=(int)sizeof(path)){fprintf(stderr,"ZIP: unsafe entry: %s\n",name);goto done;}
+    if(memchr(name,0,nl)||!safe(name)||snprintf(path,sizeof(path),"%s/%s",root,name)>=(int)sizeof(path)){fprintf(stderr,"ZIP: unsafe entry: %s\n",name);goto done;}
     pos+=46u+nl+el+cl;
+    if(!selected(name,component))continue;
     if(!read_at(f,loff,local,30)||u32(local)!=0x04034b50)goto done;
     uint64_t data=(uint64_t)loff+30+u16(local+26)+u16(local+28);
     if(data+compressed>(uint64_t)size)goto done;
     unsigned char *bytes=NULL;
     if(inflate_entry(f,data,compressed,plain,method,&bytes)){fprintf(stderr,"ZIP: inflate failed: %s method=%u compressed=%u plain=%u\n",name,method,compressed,plain);goto done;}
     if((uint32_t)crc32(0,bytes,plain)!=crc){free(bytes);goto done;}
-    if(dirs(path)){free(bytes);goto done;}
+    if(dirs(path,root)){fprintf(stderr,"ZIP: unsafe parent directory: %s\n",name);free(bytes);goto done;}
     if((mode&0170000)==0120000){
       /* Symlink target must remain inside SDK tree; reject absolute/traversal. */
-      if(!plain||memchr(bytes,0,plain)||!safe_link_target(name,(char*)bytes)||symlink((char*)bytes,path)){fprintf(stderr,"ZIP: symlink rejected: %s -> %s\n",name,bytes);free(bytes);goto done;}
+      if(!plain||memchr(bytes,0,plain)||!safe_link_target(name,(char*)bytes)||
+         !link_in_component(name,(char*)bytes,component)||symlink((char*)bytes,path)){fprintf(stderr,"ZIP: symlink rejected: %s -> %s\n",name,bytes);free(bytes);goto done;}
     }else if(name[nl-1]=='/'){
       if(mkdir(path,0700)&&errno!=EEXIST){free(bytes);goto done;}
     }else{
-      FILE *out=fopen(path,"wb");if(!out){free(bytes);goto done;}
+      int fd=open(path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+      if(fd<0){fprintf(stderr,"ZIP: cannot create file: %s\n",name);free(bytes);goto done;}
+      FILE *out=fdopen(fd,"wb");if(!out){close(fd);free(bytes);goto done;}
       int fail=fwrite(bytes,1,plain,out)!=plain;
+      if(fchmod(fd,mode&0111?0755:0644))fail=1;
       if(fclose(out)||fail){free(bytes);goto done;}
-      if(chmod(path,mode&0111?0755:0644)){free(bytes);goto done;}
     }
     free(bytes);
   }

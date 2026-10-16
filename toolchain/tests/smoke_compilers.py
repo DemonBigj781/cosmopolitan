@@ -18,6 +18,8 @@ PROBES = {
     "machin": (["machin", "build"], ROOT / "toolchain/machin_demo.mfl",
                "Machin linked into Cosmopolitan APE\n"),
 }
+EXPECTED_COMPONENTS = {"c": ["C"], "cpp": ["C"], "rust": ["Rust", "C"], "machin": ["C"]}
+OWNED_TEMP_PREFIXES = ("cosmo-sdk-", "rust-ape-build-", "machin-ape-")
 
 
 def has_ape_magic(binary):
@@ -29,6 +31,9 @@ def has_ape_magic(binary):
 def probe(toolchain, language, output_dir, ape_loader=None):
     directory = output_dir / language
     directory.mkdir()  # Do not overwrite evidence from a previous run.
+    temporary = directory / "temporary"
+    temporary.mkdir()
+    environment = dict(os.environ, TMPDIR=str(temporary))
     flags, source, expected = PROBES[language]
     binary = directory / "hello.com"
     prefix = [str(ape_loader)] if ape_loader else []
@@ -38,14 +43,20 @@ def probe(toolchain, language, output_dir, ape_loader=None):
     try:
         with (directory / "build.log").open("w") as log:
             build = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT,
-                                   cwd=directory, timeout=600)
+                                   cwd=directory, timeout=600, env=environment)
         result["build_exit"] = build.returncode
+        build_log = (directory / "build.log").read_text(errors="replace")
+        components = [line.removeprefix("SDK materialized: ").split(" (", 1)[0]
+                      for line in build_log.splitlines() if line.startswith("SDK materialized: ")]
+        result["materialized_components"] = components
         if build.returncode:
             result["error"] = "compile/link failed; see build.log"
         elif not binary.is_file():
             result["error"] = "compiler reported success but produced no executable"
         elif not has_ape_magic(binary):
             result["error"] = "compiler output lacks the APE magic signature"
+        elif components != EXPECTED_COMPONENTS[language]:
+            result["error"] = "unexpected or repeated SDK component extraction"
         else:
             with (directory / "run.log").open("w") as log:
                 run = subprocess.run([*prefix, str(binary)], stdout=log,
@@ -58,6 +69,12 @@ def probe(toolchain, language, output_dir, ape_loader=None):
                 result["error"] = "exit status or exact output mismatch; see run.log"
     except (OSError, subprocess.TimeoutExpired) as error:
         result["error"] = str(error)
+    leftovers = [path.name for path in temporary.iterdir()
+                 if path.name.startswith(OWNED_TEMP_PREFIXES)]
+    result["remaining_owned_temp_paths"] = leftovers
+    if leftovers:
+        result["passed"] = False
+        result["error"] = result.get("error", "") + " owned temporary paths remain: " + repr(leftovers)
     result["seconds"] = round(time.monotonic() - start, 3)
     return result
 

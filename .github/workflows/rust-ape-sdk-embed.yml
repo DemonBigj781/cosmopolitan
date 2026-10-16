@@ -105,6 +105,11 @@ jobs:
           sudo python3 toolchain/tests/check_native_status.py \
             --toolchain "$GITHUB_WORKSPACE/o/toolchain/compiler-payload/toolchain-with-sdk.com" \
             --ape-loader "$GITHUB_WORKSPACE/o/toolchain/compiler-payload/ape-x86_64.elf"
+      - name: Verify SDK cleanup after a compiler failure
+        run: |
+          python3 toolchain/tests/check_sdk_lifecycle.py \
+            --toolchain o/toolchain/compiler-payload/toolchain-with-sdk.com \
+            --ape-loader o/toolchain/compiler-payload/ape-x86_64.elf
       - uses: actions/upload-artifact@v4
         with:
           name: native-zip-toolchain
@@ -147,3 +152,67 @@ jobs:
           name: compiler-smoke-${{ matrix.language }}
           retention-days: 7
           path: o/smoke-${{ matrix.language }}
+  rust-sdk-relocation:
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-zip-toolchain
+          path: artifact
+      - name: Extract and move SDK components on a fresh runner
+        run: |
+          set -euo pipefail
+          cd artifact
+          sha256sum -c SHA256SUMS
+          chmod +x toolchain-with-sdk.com ape-x86_64.elf
+          cd ..
+          sudo apt-get update
+          sudo apt-get install -y zlib1g-dev
+          cc -O2 -I. toolchain/tests/extract_sdk_test.c -lz -o "$RUNNER_TEMP/sdk-extractor"
+          mkdir "$RUNNER_TEMP/sdk-export"
+          "$RUNNER_TEMP/sdk-extractor" artifact/toolchain-with-sdk.com "$RUNNER_TEMP/sdk-export" rust
+          "$RUNNER_TEMP/sdk-extractor" artifact/toolchain-with-sdk.com "$RUNNER_TEMP/sdk-export" ape
+          mv "$RUNNER_TEMP/sdk-export" "$RUNNER_TEMP/relocated-sdk"
+          test ! -e "$GITHUB_WORKSPACE/o/rust-ape/sdk"
+          test ! -e "$RUNNER_TEMP/sdk-export"
+      - name: Build standard-library application using relocated definitions
+        run: |
+          set -euo pipefail
+          SDK="$RUNNER_TEMP/relocated-sdk/rust-ape-sdk"
+          RUST="$RUNNER_TEMP/relocated-sdk/rust-toolchain"
+          export PATH="$RUST/bin:$PATH"
+          export RUSTC="$RUST/bin/rustc"
+          export CARGO_HOME="$RUNNER_TEMP/relocated-cargo-home"
+          unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS COSMO
+          cargo --version
+          rustc --version
+          cargo --config "$SDK/generated/cargo.cosmo.toml" \
+            -Z json-target-spec -Z build-std=std,panic_abort,panic_unwind \
+            -Z build-std-features= build --release \
+            --target "$SDK/generated/x86_64-unknown-linux-musl.json" \
+            --target-dir "$RUNNER_TEMP/relocated-target" \
+            --manifest-path toolchain/tests/smoke/rust-std/Cargo.toml
+      - name: Package and execute relocated standard-library output
+        run: |
+          set -euo pipefail
+          SDK="$RUNNER_TEMP/relocated-sdk/rust-ape-sdk"
+          DEBUG="$RUNNER_TEMP/relocated-target/x86_64-unknown-linux-musl/release/relocated_rust_std_smoke"
+          if [ -f "$DEBUG.com.dbg" ]; then DEBUG="$DEBUG.com.dbg"; fi
+          test -s "$DEBUG"
+          mkdir -p o/relocation
+          sh "$SDK/vendor/cosmocc/bin/apelink" \
+            -l "$SDK/vendor/cosmocc/bin/ape-x86_64.elf" \
+            -o o/relocation/rust-std.com "$DEBUG"
+          artifact/ape-x86_64.elf o/relocation/rust-std.com | tee o/relocation/result.txt
+          grep -Fx 'RUST RELOCATED STD PASS: 42' o/relocation/result.txt
+          cd artifact
+          sha256sum -c SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: relocated-rust-std
+          retention-days: 7
+          path: o/relocation

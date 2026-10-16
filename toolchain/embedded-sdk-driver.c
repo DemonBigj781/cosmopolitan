@@ -4,45 +4,49 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <unistd.h>
 #include <sys/wait.h>
-#include <sys/stat.h>
-#include <dirent.h>
-#include <limits.h>
+#include "sdk_resources.h"
+#include "tempdir.h"
 
-extern int extract_sdk_zip(const char *archive,const char *root);
 __static_yoink("zipos");
 
-static int find_cc(const char *dir, char *out, size_t cap, int depth) {
-  if (depth > 12) return 0;
-  DIR *d = opendir(dir);
-  if (!d) return 0;
-  struct dirent *ent;
-  while ((ent = readdir(d))) {
-    if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
-    char path[4096];
-    if (snprintf(path,sizeof(path),"%s/%s",dir,ent->d_name)>=(int)sizeof(path)) continue;
-    struct stat st;
-    if (lstat(path,&st)) continue;
-    if (!strcmp(ent->d_name,"cosmocc") && S_ISREG(st.st_mode)) {
-      if (strlen(path)+1 <= cap) { strcpy(out,path); closedir(d); return 1; }
-    }
-    if (S_ISDIR(st.st_mode) && find_cc(path,out,cap,depth+1)) {
-      closedir(d); return 1;
-    }
+static struct ToolchainTemp sdk_temp = TOOLCHAIN_TEMP_INIT;
+static unsigned sdk_loaded;
+
+int embedded_sdk_cleanup(void) {
+  int rc=toolchain_temp_close(&sdk_temp);
+  sdk_loaded=0;
+  if(rc)perror("remove owned SDK temporary directory");
+  return rc;
+}
+
+static int materialize(const char *self,enum SdkComponent component) {
+  unsigned bit=1u<<component;
+  if(sdk_loaded&bit)return 0;
+  if(sdk_temp.fd==-1 && toolchain_temp_open(&sdk_temp,"cosmo-sdk")) {
+    perror("create SDK temporary directory"); return 1;
   }
-  closedir(d);
+  if(extract_sdk_zip(self,sdk_temp.path,component)) {
+    fputs("SDK extraction failed\n",stderr); return 1;
+  }
+  sdk_loaded|=bit;
+  fprintf(stderr,"SDK materialized: %s (%s)\n",component==SDK_C?"C":"Rust",sdk_temp.path);
   return 0;
 }
+
 static int run(char *const argv[]) {
   pid_t p=fork();
   if(p<0) return 125;
   if(!p) { execvp(argv[0],argv); perror(argv[0]); _exit(127); }
   int status;
-  if(waitpid(p,&status,0)<0) return 125;
+  pid_t waited;
+  do { waited=waitpid(p,&status,0); } while(waited<0 && errno==EINTR);
+  if(waited<0) return 125;
   return WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);
 }
-static int rust_status(void) {
+static int rust_source_available(void) {
   static const char expected[]="Rust-APE source snapshot;";
   char marker[sizeof(expected)-1];
   if(access("/zip/rust-ape/run.sh",R_OK)) {
@@ -58,6 +62,10 @@ static int rust_status(void) {
     fputs("Invalid embedded Rust-APE source marker\n",stderr);
     return 1;
   }
+  return 0;
+}
+static int rust_status(void) {
+  if(rust_source_available())return 1;
   /* Retain the established status line: the marker was extracted in memory,
    * not onto disk. State that distinction explicitly for humans and tests. */
   puts("PASS: embedded Rust-APE source snapshot extracted");
@@ -79,21 +87,14 @@ int embedded_sdk_main(int argc,char **argv) {
     }
     if(!strcmp(argv[2],"status"))return rust_status();
   }
-  char self[4096],tmp[]="/tmp/cosmo-sdk-XXXXXX",compiler[4096];
+  int is_rust=!strcmp(argv[1],"rust");
+  if(is_rust && rust_source_available())return 1;
+  char self[4096],compiler[4096];
   if(!realpath(argv[0],self)) { perror("resolve executable"); return 1; }
-  if(!mkdtemp(tmp)) { perror("mkdtemp"); return 1; }
-  /* Standard ZIP offsets point into the APE itself; no temporary ZIP copy. */
-  int rc=extract_sdk_zip(self,tmp);
-  if(rc) { fprintf(stderr,"SDK extraction failed: %d\n",rc); return rc; }
-  if (!strcmp(argv[1], "rust")) {
-    char script[4096], marker[4096];
-    if (snprintf(script,sizeof(script),"%s/rust-ape/run.sh",tmp)>=(int)sizeof(script) ||
-        snprintf(marker,sizeof(marker),"%s/rust-ape/EMBEDDED.txt",tmp)>=(int)sizeof(marker))
-      return 1;
-    if (access(script,R_OK) || access(marker,R_OK)) {
-      fputs("Rust-APE source snapshot missing from embedded SDK\\n",stderr);
-      return 1;
-    }
+  int rc=materialize(self,is_rust?SDK_RUST:SDK_C);
+  if(rc)return rc;
+  const char *tmp=sdk_temp.path;
+  if (is_rust) {
     char rustc[4096],cargo[4096],sysroot[4096];
     if (snprintf(rustc,sizeof(rustc),"%s/rust-toolchain/bin/rustc",tmp)>=(int)sizeof(rustc) ||
         snprintf(sysroot,sizeof(sysroot),"%s/rust-toolchain",tmp)>=(int)sizeof(sysroot) ||
@@ -126,7 +127,8 @@ int embedded_sdk_main(int argc,char **argv) {
     free(rargs);
     return rc;
   }
-  if(!find_cc(tmp,compiler,sizeof(compiler),0)) {
+  if(snprintf(compiler,sizeof(compiler),"%s/bin/cosmocc",tmp)>=(int)sizeof(compiler) ||
+     access(compiler,X_OK)) {
     fputs("No cosmocc compiler found in embedded SDK\n",stderr); return 1;
   }
   int is_cpp = !strcmp(argv[1], "c++");
@@ -154,7 +156,5 @@ int embedded_sdk_main(int argc,char **argv) {
   args[n]=NULL;
   rc=run(args);
   free(args);
-  /* Temporary SDK directory retained for diagnostics and compiler subprocesses. */
-  fprintf(stderr,"SDK extracted at %s (temporary bootstrap mode)\n",tmp);
   return rc;
 }

@@ -1,0 +1,4 @@
+[package]
+name = "relocated_rust_std_smoke"
+version = "0.1.0"
+edition = "2024"

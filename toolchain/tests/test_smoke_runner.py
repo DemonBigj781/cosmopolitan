@@ -16,9 +16,14 @@ class SmokeRunnerTest(unittest.TestCase):
         self.output = Path(self.workspace.name)
 
     def run_probe(self, *, build_exit=0, run_exit=0, output=None,
-                  header=b"MZqFpD='", produce_binary=True, loader=None):
+                  header=b"MZqFpD='", produce_binary=True, loader=None,
+                  components=("C",), leak=False):
         def run(command, **kwargs):
             if "-o" in command:
+                for component in components:
+                    kwargs["stdout"].write(f"SDK materialized: {component} (test fixture)\n")
+                if leak:
+                    (Path(kwargs["env"]["TMPDIR"]) / "cosmo-sdk-leak").mkdir()
                 if produce_binary and build_exit == 0:
                     Path(command[-1]).write_bytes(header)
                 return subprocess.CompletedProcess(command, build_exit)
@@ -67,6 +72,15 @@ class SmokeRunnerTest(unittest.TestCase):
         self.run_probe()
         with self.assertRaises(FileExistsError):
             self.run_probe()
+
+    def test_repeated_component_materialization_is_failure(self):
+        result, _ = self.run_probe(components=("C", "C"))
+        self.assertFalse(result["passed"])
+
+    def test_owned_temporary_directory_leak_is_failure(self):
+        result, _ = self.run_probe(leak=True)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["remaining_owned_temp_paths"], ["cosmo-sdk-leak"])
 
 
 if __name__ == "__main__":

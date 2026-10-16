@@ -6,17 +6,14 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <limits.h>
-#include <errno.h>
+#include "sdk_resources.h"
+#include "tempdir.h"
 
-static int invoke(char *const args[]) {
-  pid_t p=fork();
-  if(p<0) {perror("fork");return 125;}
-  if(!p) {execv(args[0],args);perror("execv");_exit(127);}
-  int st;
-  if(waitpid(p,&st,0)<0) {perror("waitpid");return 125;}
-  return WIFEXITED(st)?WEXITSTATUS(st):128+WTERMSIG(st);
+static int invoke(char **args) {
+  int argc=0;
+  while(args[argc])argc++;
+  return embedded_sdk_main(argc,args);
 }
 int rust_build_main(int argc,char **argv) {
   if(argc<4 || strcmp(argv[2],"build")) {
@@ -28,19 +25,22 @@ int rust_build_main(int argc,char **argv) {
     if(!strcmp(argv[i],"-o") && i+1<argc)output=argv[++i];
     else {fprintf(stderr,"Unknown Rust build option: %s\n",argv[i]);return 2;}
   }
-  char self[4096],dir[]="/tmp/rust-ape-build-XXXXXX";
+  char self[4096];
+  struct ToolchainTemp workspace=TOOLCHAIN_TEMP_INIT;
   if(!realpath(argv[0],self)) {perror("resolve APE");return 1;}
-  if(!mkdtemp(dir)) {perror("mkdtemp");return 1;}
+  if(toolchain_temp_open(&workspace,"rust-ape-build")) {perror("create Rust workspace");return 1;}
+  const char *dir=workspace.path;
+  int rc=1;
   char x[4096],a[4096],subdir[4096],wrapper[4096],cobj[4096];
   if(snprintf(x,sizeof(x),"%s/rust.o",dir)>=(int)sizeof(x) ||
      snprintf(subdir,sizeof(subdir),"%s/.aarch64",dir)>=(int)sizeof(subdir) ||
      snprintf(a,sizeof(a),"%s/rust.o",subdir)>=(int)sizeof(a) ||
      snprintf(wrapper,sizeof(wrapper),"%s/main.c",dir)>=(int)sizeof(wrapper) ||
-     snprintf(cobj,sizeof(cobj),"%s/main.o",dir)>=(int)sizeof(cobj))return 1;
-  if(mkdir(subdir,0700)) {perror("mkdir");return 1;}
+     snprintf(cobj,sizeof(cobj),"%s/main.o",dir)>=(int)sizeof(cobj))goto done;
+  if(mkdir(subdir,0700)) {perror("mkdir");goto done;}
   char *xargs[]={self,"rust","rustc","--edition=2024","--crate-type=lib","--emit=obj",
     "-C","panic=abort","-C","overflow-checks=off",(char*)source,"-o",x,NULL};
-  int rc=invoke(xargs);
+  rc=invoke(xargs);
   if(!rc) {
     char *aargs[]={self,"rust","rustc","--edition=2024","--target","aarch64-unknown-linux-gnu",
       "--crate-type=lib","--emit=obj","-C","panic=abort","-C","overflow-checks=off",
@@ -63,7 +63,8 @@ int rust_build_main(int argc,char **argv) {
     char *link[]={self,"cc",cobj,x,"-o",(char*)output,NULL};
     rc=invoke(link);
   }
+done:
+  if(toolchain_temp_close(&workspace)) {perror("remove Rust workspace");if(!rc)rc=1;}
   if(!rc)fprintf(stderr,"Built Rust APE: %s\n",output);
-  /* Keep temporary objects for diagnostics until cleanup support is added. */
   return rc;
 }

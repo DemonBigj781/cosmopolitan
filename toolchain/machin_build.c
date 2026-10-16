@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <errno.h>
+#include "tempdir.h"
 
 static int child(char *const args[], const char *stdout_path) {
   pid_t pid=fork();
@@ -22,7 +23,9 @@ static int child(char *const args[], const char *stdout_path) {
     perror("execv");_exit(127);
   }
   int status;
-  if(waitpid(pid,&status,0)<0){perror("waitpid");return 125;}
+  pid_t waited;
+  do { waited=waitpid(pid,&status,0); } while(waited<0 && errno==EINTR);
+  if(waited<0){perror("waitpid");return 125;}
   if(WIFEXITED(status))return WEXITSTATUS(status);
   return WIFSIGNALED(status)?128+WTERMSIG(status):125;
 }
@@ -38,19 +41,20 @@ int machin_build_main(int argc,char **argv){
   }
   char self[4096];
   if(!realpath(argv[0],self)){perror("resolve APE");return 1;}
-  char tempdir[]="/tmp/machin-ape-XXXXXX";
-  if(!mkdtemp(tempdir)){perror("mkdtemp");return 1;}
+  struct ToolchainTemp workspace=TOOLCHAIN_TEMP_INIT;
+  if(toolchain_temp_open(&workspace,"machin-ape")){perror("create Machin workspace");return 1;}
+  int rc=1;
   char temp[4096];
-  if(snprintf(temp,sizeof(temp),"%s/generated.c",tempdir)>=(int)sizeof(temp))return 1;
+  if(snprintf(temp,sizeof(temp),"%s/generated.c",workspace.path)>=(int)sizeof(temp))goto done;
   char *generate[]={self,"machin-compiler","--full",(char*)source,NULL};
-  int rc=child(generate,temp);
+  rc=child(generate,temp);
   if(!rc){
     char *compile[]={self,"cc","-O2","-std=c11","-pthread",
                      temp,"-o",(char*)output,NULL};
     rc=child(compile,NULL);
   }
-  if(unlink(temp)&&errno!=ENOENT)perror("remove intermediate C");
-  if(rmdir(tempdir))perror("remove temporary directory");
+done:
+  if(toolchain_temp_close(&workspace)){perror("remove Machin workspace");if(!rc)rc=1;}
   if(!rc)fprintf(stderr,"Built %s using the unified APE\\n",output);
   return rc;
 }
