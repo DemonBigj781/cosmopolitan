@@ -36,10 +36,10 @@ runtime; this is not a claim that all language code becomes native machine code.
 - [x] Independently compile and execute C, C++17/STL/exceptions, Rust `no_std`
   with a C-runtime call, and Machin programs on Linux x86-64.
 - [x] Add packaging/extraction regression tests and an independent smoke runner.
-- [ ] Reconcile the separate Rust linker workflow's missing ARM64 companion
-  object with the working two-architecture build route.
-- [ ] Establish a fully validated release/recovery point after all required
-  checks pass; do not equate packaging success with complete portability.
+- [x] Fix the separate Rust linker workflow's missing ARM64 companion object;
+  the hosted positive and unresolved-symbol checks now pass.
+- [x] Preserve Linux CI-validated source `7dd60ac5` with local recovery tag
+  `checkpoint/native-zip-linux-ci-20261016`. This is not a multi-platform release.
 
 Local validation on October 16, 2026 used Cosmocc 4.0.2, Rust nightly-2026-07-28,
 and Machin revision `9e0fb93e17c43d7ed047df80aa881037286aaae4`. A separate SDK copy
@@ -52,6 +52,22 @@ top-level SDK caches/build outputs. Both GCC and Clang passed 16 focused tests.
 These results do not establish Windows/macOS execution, ARM64 execution, or a
 relocatable Rust standard-library target. C++ emitted non-fatal SDK warnings.
 
+### Hosted validation checkpoint
+
+All 11 triggered workflows passed for commit
+`7dd60ac5ee02e08ba345944f85f6a5478f2d80db`. The shared-artifact pipeline in run
+`38962961798` passed packaging plus independent Linux C, C++, Rust, and Machin
+compile-and-execute jobs. Each compiler job verified the same artifact hashes
+before and after testing. Its native read-only status check passed in 0.014
+seconds. The earlier CI loader-path error was corrected by keeping the loader
+outside the test's replaced `/tmp` mount.
+
+The CI artifact contains 10,587 resources, including the original executable
+resources. Its staged host Rust compiler contains fewer files than the local
+bootstrap sysroot; do not conflate that inventory with the local counts above.
+The hosted workflows still have some unpinned upstream downloads, so fully
+reproducible bootstrap inputs remain a separate task below.
+
 ## 2. Current milestone: self-contained existing toolchain
 
 - [x] Prove native ZIPOS reads from the real SDK without extraction, using the
@@ -62,8 +78,8 @@ relocatable Rust standard-library target. C++ emitted non-fatal SDK warnings.
 - [x] Move `rust status` to ZIPOS without disk extraction. The new artifact passed
   a read-only-filesystem check in 0.036 seconds; invalid commands also fail before
   extraction. Compiler paths no longer create a separate copy of the SDK ZIP.
-- [ ] Re-run all four compiler smoke tests against the migrated format on hosted
-  CI. The earlier four-language pass belongs to the pre-migration baseline.
+- [x] Re-run all four compiler smoke tests against the migrated format on hosted
+  CI using the same downloaded artifact in separate jobs.
 - [ ] Avoid redundant whole-SDK extraction for compiler subprocesses; explicitly
   determine what must exist on disk and manage temporary-file lifetimes.
 - [ ] Make packaged Rust target/linker definitions relocatable at their source.
@@ -75,9 +91,9 @@ relocatable Rust standard-library target. C++ emitted non-fatal SDK warnings.
 - [ ] Measure size, startup, resident memory, extraction I/O, and dependency
   count before optimizing. Preserve correct output and diagnostics.
 
-The validated SDK archive is about 1.17 GB compressed and 3.75 GB uncompressed.
-The migrated artifact adds the executable's three original embedded resources,
-for 14,268 unique paths. Repeated compiler-side SDK extraction remains a measured
+The local staged SDK archive is about 1.17 GB compressed and 3.75 GB uncompressed.
+The local migrated artifact adds the executable's three original resources, for
+14,268 unique paths. Repeated compiler-side SDK extraction remains a measured
 bottleneck, even though read-only status and the temporary ZIP copy are resolved.
 
 ## 3. Portability and regression gates
