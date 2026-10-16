@@ -67,7 +67,7 @@ for directory,_,names in os.walk(root):
     for name in names:
         path=os.path.join(directory,name)
         files.append(path)
-with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,allowZip64=True) as z:
+with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,allowZip64=True,strict_timestamps=False) as z:
     for path in sorted(files):
         arc=os.path.relpath(path,root)
         if os.path.islink(path):
