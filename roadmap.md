@@ -14,10 +14,16 @@ Three separate acceptance levels apply:
 | Compiler/runtime | Each embedded implementation actually works there. |
 | Generated programs | Produced or hosted programs run as compatible APEs. |
 
-Linux and Windows are primary targets. macOS is optional but desired: prepare
-compatible artifacts where practical and distinguish build support from an
-actual macOS runtime test. Track CPU architecture separately from operating
-system. A successful launcher test does not establish the other two levels.
+Linux and Windows are primary targets. macOS remains optional and **compile-only**:
+do not run macOS tests, perform an agent-led macOS compatibility review, use macOS
+runners, or acquire/rent Mac hardware. macOS compatibility assessment is reserved
+for a separate third party; label its artifacts untested and unreviewed.
+
+An operator-owned NVIDIA ARM machine is reserved for later testing. Do not connect
+to or test it until explicitly requested; keep private connection details out of
+this public roadmap. ARM64 compilation may proceed, but runtime checks are deferred.
+Track CPU architecture separately from operating system. A successful launcher
+test does not establish compiler or generated-program portability.
 
 Future command examples such as `toolchain.com python hello.py -o hello.com`
 are interface proposals, not existing commands or a finalized CLI contract.
@@ -122,9 +128,13 @@ completion. Eliminating the remaining necessary materialization is separate work
 
 ## 3. Portability and regression gates
 
+- [ ] Prioritize Rust-generated APE programs through the existing Rust-APE SDK:
+  compile x86-64 and ARM64 on Linux, package the requested bootstrap inputs, and
+  validate the same bytes on Linux x86-64 and Windows x86-64. This is not a port
+  of the Rust compiler/Cargo host executables.
 - [ ] Run the same artifact's compiler smoke tests on Linux and Windows.
-- [ ] Add macOS builds/compatibility checks and runtime validation when available;
-  macOS remains optional and must not block the primary targets unnecessarily.
+- [ ] Produce macOS-targeted APE build outputs only. Do not add macOS runtime
+  jobs or perform compatibility review; third-party assessment remains separate.
 - [ ] Keep launcher, compiler/runtime, and generated-program results distinct.
 - [ ] Test absence of installed compilers, offline operation, negative inputs,
   filesystem isolation, and both architecture outputs where supported.

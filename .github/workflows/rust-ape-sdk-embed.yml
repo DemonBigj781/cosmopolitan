@@ -183,7 +183,7 @@ jobs:
           mv "$RUNNER_TEMP/sdk-export" "$RUNNER_TEMP/relocated-sdk"
           test ! -e "$GITHUB_WORKSPACE/o/rust-ape/sdk"
           test ! -e "$RUNNER_TEMP/sdk-export"
-      - name: Build standard-library application using relocated definitions
+      - name: Cross-build Rust std and upstream threads programs for both architectures
         run: |
           set -euo pipefail
           SDK="$RUNNER_TEMP/relocated-sdk/rust-ape-sdk"
@@ -193,27 +193,43 @@ jobs:
           export CARGO_HOME="$RUNNER_TEMP/relocated-cargo-home"
           export __CARGO_TESTS_ONLY_SRC_ROOT="$SDK/vendor/library"
           unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS COSMO
+          PROJECT="$RUNNER_TEMP/rust-programs"
+          mkdir -p "$PROJECT/src"
+          cp toolchain/tests/smoke/rust-std/Cargo.toml "$PROJECT/Cargo.toml"
+          cp toolchain/tests/smoke/rust-std/src/main.rs "$PROJECT/src/main.rs"
+          python3 - "$PROJECT/Cargo.toml" "$SDK/examples/src/bin/threads.rs" <<'PY'
+          import json, sys
+          with open(sys.argv[1], 'a') as manifest:
+              manifest.write('\n[[bin]]\nname = "rust_ape_threads"\npath = ' + json.dumps(sys.argv[2]) + '\n')
+          PY
           cargo --version
           rustc --version
-          cargo --config "$SDK/generated/cargo.cosmo.toml" \
-            -Z json-target-spec -Z build-std=std,panic_abort,panic_unwind \
-            -Z build-std-features= build --release \
-            --target "$SDK/generated/x86_64-unknown-linux-musl.json" \
-            --target-dir "$RUNNER_TEMP/relocated-target" \
-            --manifest-path toolchain/tests/smoke/rust-std/Cargo.toml
-      - name: Package and execute relocated standard-library output
+          for arch in x86_64 aarch64; do
+            cargo --config "$SDK/generated/cargo.cosmo.toml" \
+              -Z json-target-spec -Z build-std=std,panic_abort,panic_unwind \
+              -Z build-std-features= build --release --bins \
+              --target "$SDK/generated/$arch-unknown-linux-musl.json" \
+              --target-dir "$RUNNER_TEMP/relocated-target" \
+              --manifest-path "$PROJECT/Cargo.toml"
+          done
+      - name: Package dual-architecture APEs with the requested bootstrap inputs
         run: |
           set -euo pipefail
           SDK="$RUNNER_TEMP/relocated-sdk/rust-ape-sdk"
-          DEBUG="$RUNNER_TEMP/relocated-target/x86_64-unknown-linux-musl/release/relocated_rust_std_smoke"
-          if [ -f "$DEBUG.com.dbg" ]; then DEBUG="$DEBUG.com.dbg"; fi
-          test -s "$DEBUG"
-          mkdir -p o/relocation
-          sh "$SDK/vendor/cosmocc/bin/apelink" \
-            -l "$SDK/vendor/cosmocc/bin/ape-x86_64.elf" \
-            -o o/relocation/rust-std.com "$DEBUG"
+          python3 toolchain/link_rust_programs.py \
+            --sdk "$SDK" --target-dir "$RUNNER_TEMP/relocated-target" \
+            --program relocated_rust_std_smoke rust-std.com \
+            --program rust_ape_threads rust-threads.com \
+            --output-dir o/relocation --source-commit "$GITHUB_SHA"
+      - name: Execute only the Linux x86-64 program variants
+        run: |
+          set -euo pipefail
+          (cd o/relocation && sha256sum -c SHA256SUMS)
           artifact/ape-x86_64.elf o/relocation/rust-std.com | tee o/relocation/result.txt
           grep -Fx 'RUST RELOCATED STD PASS: 42' o/relocation/result.txt
+          artifact/ape-x86_64.elf o/relocation/rust-threads.com | tee o/relocation/threads-linux.txt
+          grep -Fx 'threads ok' o/relocation/threads-linux.txt
+          (cd o/relocation && sha256sum -c SHA256SUMS)
           cd artifact
           sha256sum -c SHA256SUMS
       - uses: actions/upload-artifact@v4
@@ -222,3 +238,65 @@ jobs:
           name: relocated-rust-std
           retention-days: 7
           path: o/relocation
+  rust-programs-windows:
+    name: Windows x86-64 execution of the identical Rust APEs
+    needs: rust-sdk-relocation
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: relocated-rust-std
+          path: artifact
+      - name: Verify and execute the Linux-built programs
+        working-directory: artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Get-Content -Raw BUILD.json | ConvertFrom-Json
+          if ($build.source_commit -ne $env:GITHUB_SHA) { throw 'Unexpected build revision' }
+          $checks = [ordered]@{
+            'rust-std.com' = 'RUST RELOCATED STD PASS: 42'
+            'rust-threads.com' = 'threads ok'
+          }
+          $results = @()
+          foreach ($file in $checks.Keys) {
+            $entries = @($build.programs | Where-Object { $_.file -eq $file })
+            if ($entries.Count -ne 1) { throw "Expected one build record for $file" }
+            $expected = $entries[0].sha256
+            if ((Get-FileHash -Algorithm SHA256 $file).Hash.ToLowerInvariant() -ne $expected) {
+              throw "Artifact differs from Linux build: $file"
+            }
+            $exe = [IO.Path]::ChangeExtension($file, '.exe')
+            Copy-Item -LiteralPath $file -Destination $exe
+            if ((Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant() -ne $expected) {
+              throw 'Renaming changed executable bytes'
+            }
+            $process = Start-Process -FilePath ([IO.Path]::GetFullPath($exe)) -PassThru -NoNewWindow `
+              -RedirectStandardOutput "$file.stdout.log" -RedirectStandardError "$file.stderr.log"
+            try {
+              if (-not $process.WaitForExit(180000)) {
+                $process.Kill($true)
+                throw "$file timed out"
+              }
+              if ($process.ExitCode -ne 0) { throw "$file failed: $($process.ExitCode)" }
+              $lines = @(Get-Content "$file.stdout.log")
+              if ($lines -cnotcontains $checks[$file]) { throw "Missing success marker for $file" }
+              if ((Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant() -ne $expected) {
+                throw "$file changed during execution"
+              }
+              $results += @{ file = $file; sha256 = $expected; platform = 'Windows x86-64'; passed = $true }
+            } finally {
+              Get-Content "$file.stdout.log", "$file.stderr.log"
+              $process.Dispose()
+            }
+          }
+          $results | ConvertTo-Json -Depth 4 | Set-Content windows-results.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rust-programs-windows-results
+          retention-days: 7
+          path: |
+            artifact/windows-results.json
+            artifact/*.log

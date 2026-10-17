@@ -165,13 +165,43 @@ The configuration probe also verifies that source selection using Cargo's unit
 graph mode, without compiling any code.
 
 The hosted relocation job exports the Rust and patched SDK components from the
-same artifact onto a fresh runner, moves the root, and builds/runs a standard-
-library application with no original SDK directory present. This is separate
+same artifact onto a fresh runner, moves the root, and cross-builds standard-
+library programs with no original SDK directory present. This is separate
 from `rust build`'s current `no_std` interface and does not change `rust cargo`
 into an implicit Cosmopolitan standard-library build command. The Rust compiler
 itself remains a Linux-host binary; third-party tools retain their own path and
 platform restrictions. Registry dependencies for a fresh std build are not yet
 bundled for offline use.
+
+## Rust-generated program portability
+
+The current priority is portable **program output**, using the existing pinned
+`starccy/rust-ape` SDK. This does not turn the packaged `rustc` and Cargo host
+executables into Windows/macOS compiler implementations.
+
+The Linux-hosted job builds both `x86_64-unknown-linux-musl` and
+`aarch64-unknown-linux-musl` with the patched standard library. It reuses the
+existing std smoke program and the pinned upstream std-only `threads.rs` example,
+without copying or modifying that example or pulling in unrelated example
+dependencies.
+
+`link_rust_programs.py` follows the upstream two-architecture `apelink` recipe,
+including both ELF loaders and the `ape-m1.c` bootstrap input. Requested inputs
+are mandatory: there is no retry that silently omits one. Outputs preserve the
+existing `rust-std.com` artifact name and add `rust-threads.com`, build metadata,
+checksums, and the Rust-APE license. Build-recipe unit tests do not establish OS
+compatibility.
+
+Linux x86-64 and Windows x86-64 execution jobs consume the same program bytes
+and check hashes before and after running. The Windows job only changes the
+filename extension to `.exe`; it does not rebuild the applications or invoke a
+Windows Rust compiler.
+
+**macOS is compile-only and remains untested and unreviewed.** No macOS runner,
+runtime test, agent-led compatibility review, or rented Mac hardware is used.
+Separate third-party assessment is required. ARM64 runtime testing, including
+the operator-owned NVIDIA ARM machine, is deferred; compilation does not imply
+that those execution targets were verified.
 
 ## Next stages
 
