@@ -265,7 +265,7 @@ jobs:
     name: Programs - ${{ matrix.label }}
     needs: program-test-bundle
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 25
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -321,6 +321,29 @@ jobs:
         run: |
           python toolchain/tests/program_matrix.py run --bundle artifact --output o/program-results \
             --source-commit "$GITHUB_SHA" --expected-os "$EXPECTED_OS" --expected-arch "$EXPECTED_ARCH"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: native-zip-toolchain
+          path: compiler-artifact
+      - name: Probe the packaged toolchain and every compiler independently
+        shell: bash
+        env:
+          EXPECTED_OS: ${{ matrix.os }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          python toolchain/tests/compiler_hosts.py --toolchain compiler-artifact/toolchain-with-sdk.com \
+            --build-manifest compiler-artifact/BUILD.json --resources artifact --output o/compiler-host \
+            --source-commit "$GITHUB_SHA" --expected-os "$EXPECTED_OS" --expected-arch "$EXPECTED_ARCH"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: compiler-host-${{ matrix.runner }}
+          retention-days: 7
+          path: |
+            o/compiler-host/*.json
+            o/compiler-host/*.log
+            o/compiler-host/*/*.log
+            o/compiler-host/*/hello.com
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
