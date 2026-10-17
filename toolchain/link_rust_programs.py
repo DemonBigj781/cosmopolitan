@@ -1,7 +1,7 @@
 """Package Linux-cross-compiled Rust programs using the pinned Rust-APE recipe.
 
-This links build outputs only. It performs no macOS execution or compatibility
-review and never retries with a reduced set of requested bootstrap inputs.
+This links build outputs only. Runtime validation is reported by separate jobs;
+linking never retries with a reduced set of requested bootstrap inputs.
 """
 
 import argparse
@@ -52,9 +52,8 @@ def link_programs(sdk, target_dir, programs, output, source_commit):
         "source_commit": source_commit,
         "scope": "Rust-generated programs; not rustc/Cargo host portability",
         "architectures": list(ARCHITECTURES),
-        "macos": {"compile_only": True, "runtime_tested": False,
-                  "compatibility_reviewed": False, "third_party_review_required": True},
-        "arm64_runtime_tested": False,
+        "runtime_tested": False,
+        "runtime_results": "Published separately by execution jobs",
         "programs": [],
     }
     for name, filename in programs:
@@ -79,7 +78,7 @@ def link_programs(sdk, target_dir, programs, output, source_commit):
     (output / "BUILD.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (output / "SHA256SUMS").write_text("".join(
         f"{program['sha256']}  {program['file']}\n" for program in manifest["programs"]))
-    print("Built dual-architecture Rust APE programs; macOS untested/unreviewed, ARM64 runtime deferred")
+    print("Built dual-architecture Rust APE programs; runtime results are published separately")
 
 
 def main():

@@ -230,16 +230,31 @@ existing `rust-std.com` artifact name and add `rust-threads.com`, build metadata
 checksums, and the Rust-APE license. Build-recipe unit tests do not establish OS
 compatibility.
 
-Linux x86-64 and Windows x86-64 execution jobs consume the same program bytes
-and check hashes before and after running. The Windows job only changes the
-filename extension to `.exe`; it does not rebuild the applications or invoke a
-Windows Rust compiler.
+The operator has now authorized cross-OS program execution tests in the existing
+GitHub-hosted workflow. This supersedes the earlier macOS compile-only restriction
+for these tests; it does not authorize compiler-host portability work or a broad
+platform compatibility claim.
 
-**macOS is compile-only and remains untested and unreviewed.** No macOS runner,
-runtime test, agent-led compatibility review, or rented Mac hardware is used.
-Separate third-party assessment is required. ARM64 runtime testing, including
-the operator-owned NVIDIA ARM machine, is deferred; compilation does not imply
-that those execution targets were verified.
+`tests/program_matrix.py` assembles the four existing compiler-smoke outputs and
+the two Rust std/threading programs into one small, checksummed artifact. It
+rejects failed build probes and mismatched Rust program hashes/source revisions.
+The execution matrix consumes the same program bytes on Linux x86-64/ARM64,
+macOS Intel/ARM64, Windows x86-64, and a Windows ARM64 host. Each job verifies the
+actual host architecture, input hashes, process exit status, expected output, and
+post-execution hashes. Windows copies receive an `.exe` suffix without changing
+their contents. Windows PE machine metadata determines whether execution is
+native or x64-emulated; an ARM runner alone does not establish native ARM output.
+
+Linux and Intel macOS use the pinned SDK's explicit native loaders. Apple Silicon
+compiles only the pinned `ape-m1.c` runtime loader using the runner's Apple C
+compiler; the tested applications are not rebuilt. No systemwide APE handler is
+installed. Program failures and timeouts remain failures, and later probes still
+run. Per-program logs and `summary.json` are uploaded even when a test fails.
+The build manifest deliberately does not claim runtime success; consult the
+matching `program-results-*` artifacts for the actual execution results.
+
+Xavier is an optional hardware-specific testing ground, not a build server or a
+required CI runner. This matrix does not upgrade, configure, or clean that host.
 
 ## Next stages
 

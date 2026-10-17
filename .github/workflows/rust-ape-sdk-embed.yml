@@ -98,6 +98,18 @@ jobs:
           python3 toolchain/tests/check_sdk_lifecycle.py \
             --toolchain o/toolchain/compiler-payload/toolchain-with-sdk.com \
             --ape-loader o/toolchain/compiler-payload/ape-x86_64.elf
+      - name: Preserve small runtime-test resources from this build
+        run: |
+          mkdir -p o/toolchain/program-loaders
+          cp /tmp/cosmocc/bin/ape-x86_64.elf /tmp/cosmocc/bin/ape-aarch64.elf \
+            /tmp/cosmocc/bin/ape-x86_64.macho /tmp/cosmocc/bin/ape-m1.c o/toolchain/program-loaders/
+          cp /tmp/machin/LICENSE o/toolchain/program-loaders/LICENSE.machin
+          cp o/toolchain/compiler-payload/BUILD.json o/toolchain/program-loaders/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: program-runtime-resources
+          retention-days: 7
+          path: o/toolchain/program-loaders
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: native-zip-toolchain
@@ -222,65 +234,96 @@ jobs:
           name: relocated-rust-std
           retention-days: 7
           path: o/relocation
-  rust-programs-windows:
-    name: Windows x86-64 execution of the identical Rust APEs
-    needs: rust-sdk-relocation
-    runs-on: windows-2022
-    timeout-minutes: 15
+  program-test-bundle:
+    name: Assemble unchanged program-test artifacts
+    needs: [compiler-smoke, rust-sdk-relocation]
+    runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: compiler-smoke-*
+          path: smoke
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: relocated-rust-std
-          path: artifact
-      - name: Verify and execute the Linux-built programs
-        working-directory: artifact
-        shell: pwsh
+          path: rust-programs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: program-runtime-resources
+          path: runtime-resources
+      - name: Bundle programs without recompilation
         run: |
-          $ErrorActionPreference = 'Stop'
-          $build = Get-Content -Raw BUILD.json | ConvertFrom-Json
-          if ($build.source_commit -ne $env:GITHUB_SHA) { throw 'Unexpected build revision' }
-          $checks = [ordered]@{
-            'rust-std.com' = 'RUST RELOCATED STD PASS: 42'
-            'rust-threads.com' = 'threads ok'
-          }
-          $results = @()
-          foreach ($file in $checks.Keys) {
-            $entries = @($build.programs | Where-Object { $_.file -eq $file })
-            if ($entries.Count -ne 1) { throw "Expected one build record for $file" }
-            $expected = $entries[0].sha256
-            if ((Get-FileHash -Algorithm SHA256 $file).Hash.ToLowerInvariant() -ne $expected) {
-              throw "Artifact differs from Linux build: $file"
-            }
-            $exe = [IO.Path]::ChangeExtension($file, '.exe')
-            Copy-Item -LiteralPath $file -Destination $exe
-            if ((Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant() -ne $expected) {
-              throw 'Renaming changed executable bytes'
-            }
-            $process = Start-Process -FilePath ([IO.Path]::GetFullPath($exe)) -PassThru -NoNewWindow `
-              -RedirectStandardOutput "$file.stdout.log" -RedirectStandardError "$file.stderr.log"
-            try {
-              if (-not $process.WaitForExit(180000)) {
-                $process.Kill($true)
-                throw "$file timed out"
-              }
-              if ($process.ExitCode -ne 0) { throw "$file failed: $($process.ExitCode)" }
-              $lines = @(Get-Content "$file.stdout.log")
-              if ($lines -cnotcontains $checks[$file]) { throw "Missing success marker for $file" }
-              if ((Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant() -ne $expected) {
-                throw "$file changed during execution"
-              }
-              $results += @{ file = $file; sha256 = $expected; platform = 'Windows x86-64'; passed = $true }
-            } finally {
-              Get-Content "$file.stdout.log", "$file.stderr.log"
-              $process.Dispose()
-            }
-          }
-          $results | ConvertTo-Json -Depth 4 | Set-Content windows-results.json
+          python3 toolchain/tests/program_matrix.py bundle --smoke smoke --rust rust-programs \
+            --loaders runtime-resources --output o/program-tests --source-commit "$GITHUB_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cross-os-programs
+          retention-days: 7
+          path: o/program-tests
+  program-runtime:
+    name: Programs - ${{ matrix.label }}
+    needs: program-test-bundle
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x86-64
+            runner: ubuntu-24.04
+            os: Linux
+            arch: x86_64
+            python-arch: x64
+          - label: Linux ARM64
+            runner: ubuntu-24.04-arm
+            os: Linux
+            arch: aarch64
+            python-arch: arm64
+          - label: macOS Intel
+            runner: macos-26-intel
+            os: Darwin
+            arch: x86_64
+            python-arch: x64
+          - label: macOS ARM64
+            runner: macos-26
+            os: Darwin
+            arch: aarch64
+            python-arch: arm64
+          - label: Windows x86-64
+            runner: windows-2022
+            os: Windows
+            arch: x86_64
+            python-arch: x64
+          - label: Windows ARM host - x64 emulation
+            runner: windows-11-arm
+            os: Windows
+            arch: aarch64
+            python-arch: arm64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+          architecture: ${{ matrix.python-arch }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: cross-os-programs
+          path: artifact
+      - name: Check runtime harness on this host
+        shell: bash
+        run: python -m unittest discover -s toolchain/tests -p test_program_matrix.py -v
+      - name: Verify architecture and execute unchanged programs
+        shell: bash
+        env:
+          EXPECTED_OS: ${{ matrix.os }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          python toolchain/tests/program_matrix.py run --bundle artifact --output o/program-results \
+            --source-commit "$GITHUB_SHA" --expected-os "$EXPECTED_OS" --expected-arch "$EXPECTED_ARCH"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: rust-programs-windows-results
+          name: program-results-${{ matrix.runner }}
           retention-days: 7
-          path: |
-            artifact/windows-results.json
-            artifact/*.log
+          path: o/program-results

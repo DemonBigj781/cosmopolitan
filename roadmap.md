@@ -14,16 +14,20 @@ Three separate acceptance levels apply:
 | Compiler/runtime | Each embedded implementation actually works there. |
 | Generated programs | Produced or hosted programs run as compatible APEs. |
 
-Linux and Windows are primary targets. macOS remains optional and **compile-only**:
-do not run macOS tests, perform an agent-led macOS compatibility review, use macOS
-runners, or acquire/rent Mac hardware. macOS compatibility assessment is reserved
-for a separate third party; label its artifacts untested and unreviewed.
+Linux and Windows remain primary targets. The operator has now authorized
+**generated-program runtime tests on GitHub-hosted macOS and ARM runners**,
+superseding the earlier compile-only restriction for this scoped work. First
+establish trustworthy test results; compiler-host adaptations follow separately.
+Do not acquire/rent Mac hardware or equate smoke tests with complete compatibility.
 
-An operator-owned NVIDIA ARM machine is reserved for later testing. Do not connect
-to or test it until explicitly requested; keep private connection details out of
-this public roadmap. ARM64 compilation may proceed, but runtime checks are deferred.
-Track CPU architecture separately from operating system. A successful launcher
-test does not establish compiler or generated-program portability.
+The operator-owned NVIDIA ARM machine is an optional testing ground, not a build
+server. The six existing program probes passed a specifically authorized native
+ARM64 run. Do not upgrade its distro or system software; use NVMe for test data,
+and leave cleanup to the operator. Keep private connection details out of this
+public roadmap. Additional host access remains scoped to explicit requests.
+Track CPU architecture separately from operating system and distinguish native
+execution from Windows x64 emulation. A successful launcher test does not establish
+compiler or generated-program portability.
 
 Future command examples such as `toolchain.com python hello.py -o hello.com`
 are interface proposals, not existing commands or a finalized CLI contract.
@@ -175,12 +179,15 @@ completion. Eliminating the remaining necessary materialization is separate work
   validate the same bytes on Linux x86-64 and Windows x86-64. This is not a port
   of the Rust compiler/Cargo host executables.
 - [ ] Run the same artifact's compiler smoke tests on Linux and Windows.
-- [x] Produce macOS-targeted APE build outputs only. Do not add macOS runtime
-  jobs or perform compatibility review; third-party assessment remains separate.
+- [x] Produce macOS-targeted APE build outputs. The earlier compile-only scope
+  is retained in historical checkpoints; hosted runtime tests are now authorized.
+- [ ] Run the same six generated programs on hosted Linux x86-64/ARM64,
+  macOS Intel/ARM64, and Windows x86-64/ARM64 hosts. Record x64 emulation on
+  Windows ARM separately; fix the test harness before compiler-host adaptations.
 - [ ] Keep launcher, compiler/runtime, and generated-program results distinct.
 - [ ] Test absence of installed compilers, offline operation, negative inputs,
-  and filesystem isolation on explicitly approved execution targets. ARM runtime
-  work remains deferred and macOS remains outside agent-led testing/review.
+  and filesystem isolation on explicitly approved execution targets. Scoped
+  macOS/ARM program tests are now authorized; compiler-host support is separate.
 - [ ] Preserve the existing Rust/WebGPU/LLVM and software-driver paths.
 
 Prefer GitHub-hosted Actions for heavyweight builds; keep local work focused on

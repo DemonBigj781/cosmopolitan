@@ -50,10 +50,9 @@ class LinkRustProgramsTest(unittest.TestCase):
         manifest = json.loads((self.output / "BUILD.json").read_text())
         self.assertEqual(manifest["source_commit"], "0" * 40)
         self.assertEqual(manifest["architectures"], ["x86_64", "aarch64"])
-        self.assertEqual(manifest["macos"], {"compile_only": True, "runtime_tested": False,
-                                             "compatibility_reviewed": False,
-                                             "third_party_review_required": True})
-        self.assertFalse(manifest["arm64_runtime_tested"])
+        self.assertFalse(manifest["runtime_tested"])
+        self.assertEqual(manifest["runtime_results"], "Published separately by execution jobs")
+        self.assertNotIn("macos", manifest)
         self.assertEqual((self.output / "LICENSE.rust-ape").read_text(), "reference license")
 
     def test_missing_required_input_fails_before_link(self):
