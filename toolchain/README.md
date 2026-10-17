@@ -272,6 +272,10 @@ capabilities. Drive-rooted script/file arguments use `C:/...` spelling at the
 Windows shell boundary so native argument conversion cannot break the SDK's
 slash-based directory calculations. Compiler flags and macro strings are not
 rewritten.
+The Windows shell also clears Cosmopolitan's private process/descriptor handoff
+variables before sourcing the SDK script. Otherwise APE grandchildren can mistake
+stale descriptor metadata for the shell's command-substitution pipes and corrupt
+captured output. Ordinary environment variables are preserved.
 
 The current shared artifact embeds a **Linux x86-64 Rust compiler/Cargo sysroot**.
 `rust status` reports the packaged compiler's platform. Rust commands inspect the

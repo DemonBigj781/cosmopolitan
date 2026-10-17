@@ -29,6 +29,7 @@ static int fixture_access(const char *path,int mode) {
   char buffer[4096];return access(fixture_path(path,buffer),mode);
 }
 static int fixture_execvp(const char *file,char *const args[]) {
+  if(getenv("TEST_REAL_SHELL"))return execv("/bin/sh",args);
   dprintf(1,"exec=%s\n",file);
   for(int i=0;args[i];i++)dprintf(1,"arg=%s\n",args[i]);
   _exit(0);
@@ -43,7 +44,8 @@ int extract_sdk_zip(const char *archive,const char *root,enum SdkComponent compo
   snprintf(path,sizeof(path),"%s/bin",root);if(mkdir(path,0700))return -1;
   snprintf(path,sizeof(path),"%s/bin/cosmocc",root);
   FILE *file=fopen(path,"w");if(!file)return -1;
-  fputs("#!/bin/sh\nexit 0\n",file);fclose(file);return chmod(path,0700);
+  fputs("#!/bin/sh\nprintf 'descriptor=%s pid=%s user=%s\\n' \"${_COSMO_FDS_V2-unset}\" \"${_COSMO_PID-unset}\" \"${KEEP_ME-unset}\"\n",file);
+  fclose(file);return chmod(path,0700);
 }
 int main(int argc,char **argv) {
   int result=embedded_sdk_main(argc,argv);
@@ -86,16 +88,17 @@ class SdkDriverTest(unittest.TestCase):
         self.rustc.write_bytes(header)
         self.rustc.chmod(0o755)
 
-    def run_driver(self, *args, system="Linux"):
+    def run_driver(self, *args, system="Linux", extra_env=None):
         return subprocess.run([str(self.executable), *args], text=True, capture_output=True,
                               env=dict(os.environ, TEST_HOST_OS=system,
-                                       TEST_RESOURCES=str(self.root), TMPDIR=str(self.root)))
+                                       TEST_RESOURCES=str(self.root), TMPDIR=str(self.root), **(extra_env or {})))
 
     def test_compiler_script_is_explicitly_invoked_through_sh(self):
         result = self.run_driver("cc", "--version", system="Windows")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines()[:2], ["exec=sh.exe", "arg=sh.exe"])
-        self.assertTrue(result.stdout.splitlines()[2].endswith("/bin/cosmocc"))
+        self.assertEqual(result.stdout.splitlines()[2], "arg=-c")
+        self.assertTrue(result.stdout.splitlines()[4].endswith("/bin/cosmocc"))
         self.assertEqual(result.stdout.splitlines()[-1], "arg=--version")
 
     def test_unix_shell_name_does_not_gain_a_windows_suffix(self):
@@ -116,6 +119,13 @@ class SdkDriverTest(unittest.TestCase):
         result = self.run_driver("cc", "/C/source/input.c", r"D:\build\out.com")
         self.assertIn("arg=/C/source/input.c", result.stdout.splitlines())
         self.assertIn(r"arg=D:\build\out.com", result.stdout.splitlines())
+
+    def test_windows_shell_does_not_leak_cosmo_fd_handoff_to_its_children(self):
+        result = self.run_driver("cc", "--version", system="Windows", extra_env={
+            "TEST_REAL_SHELL": "1", "_COSMO_FDS_V2": "stale-descriptors",
+            "_COSMO_PID": "stale-pid", "KEEP_ME": "ordinary-user-value"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "descriptor=unset pid=unset user=ordinary-user-value\n")
 
     def test_unsupported_rust_host_fails_before_sdk_extraction(self):
         for system in ("Windows", "Darwin"):
