@@ -92,6 +92,21 @@ The pinned Cargo's patch-path and std-source behavior is checked directly using
 offline metadata and unit-graph probes, not assumed from another Cargo version.
 The local recovery tag is `checkpoint/sdk-lifetime-linux-ci-20261016`.
 
+### Rust generated-program checkpoint
+
+All 11 triggered workflows passed for source commit
+`d304a1eb235a11c5c154089b639b9b22a6c392c5`. Run `38991458755` cross-built Rust std
+and the pinned upstream threads example for x86-64 and ARM64, then packaged both
+architectures into each APE using the upstream bootstrap inputs without a
+reduced-input fallback. The identical `rust-std.com` and `rust-threads.com` bytes
+passed Linux x86-64 and Windows x86-64 execution with before/after hash checks.
+Local regression/build-recipe coverage contains 45 tests.
+
+macOS received compile-only packaging: no macOS execution, compatibility review,
+runner, or hardware access occurred. ARM64 was compiled but not executed, and the
+operator's deferred ARM machine was not contacted. These are program-output
+results, not Windows/macOS hosting support for the compiler or Cargo.
+
 ## 2. Current milestone: self-contained existing toolchain
 
 - [x] Prove native ZIPOS reads from the real SDK without extraction, using the
@@ -128,16 +143,17 @@ completion. Eliminating the remaining necessary materialization is separate work
 
 ## 3. Portability and regression gates
 
-- [ ] Prioritize Rust-generated APE programs through the existing Rust-APE SDK:
+- [x] Prioritize Rust-generated APE programs through the existing Rust-APE SDK:
   compile x86-64 and ARM64 on Linux, package the requested bootstrap inputs, and
   validate the same bytes on Linux x86-64 and Windows x86-64. This is not a port
   of the Rust compiler/Cargo host executables.
 - [ ] Run the same artifact's compiler smoke tests on Linux and Windows.
-- [ ] Produce macOS-targeted APE build outputs only. Do not add macOS runtime
+- [x] Produce macOS-targeted APE build outputs only. Do not add macOS runtime
   jobs or perform compatibility review; third-party assessment remains separate.
 - [ ] Keep launcher, compiler/runtime, and generated-program results distinct.
 - [ ] Test absence of installed compilers, offline operation, negative inputs,
-  filesystem isolation, and both architecture outputs where supported.
+  and filesystem isolation on explicitly approved execution targets. ARM runtime
+  work remains deferred and macOS remains outside agent-led testing/review.
 - [ ] Preserve the existing Rust/WebGPU/LLVM and software-driver paths.
 
 Prefer GitHub-hosted Actions for heavyweight builds; keep local work focused on
