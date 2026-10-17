@@ -18,6 +18,44 @@ COSMOCC=/path/to/cosmocc sh toolchain/build.sh
 
 Output: `o/toolchain/toolchain.com`.
 
+## Pinned bootstrap and artifact provenance
+
+The toolchain workflows share `.github/actions/toolchain-bootstrap`. Exact Go,
+Machin commit, and standalone Rust linker-probe versions live in
+`toolchain/bootstrap.lock.json`. Cosmocc's version/archive SHA256 and the Rust
+nightly are read from the existing vendored Rust-APE definitions, not duplicated.
+Run `python3 toolchain/bootstrap.py pins` to inspect the resolved pins.
+
+`bootstrap.py sdk DESTINATION` invokes the existing checksum-checking downloader
+in isolated temporary storage. `bootstrap.py machin SOURCE BINARY` fetches the
+exact commit and checks the Go version before building. Both require new output
+paths; neither overwrites nor silently trusts an existing installation.
+`bootstrap.py stage-rust SYSROOT DESTINATION` checks the distribution date and
+stages rustc, Cargo, libraries, the distribution manifest, Cargo license files,
+and Rust compiler/library copyright notices. Missing required notices fail
+before publication. These helpers require Python 3.11+.
+
+SDK packaging adds `toolchain-metadata/BUILD.json` to the native ZIP and writes
+external `BUILD.json` and `SHA256SUMS` beside `toolchain-with-sdk.com`. The embedded
+record identifies the source commit/worktree state, requested pins, actual input
+tree fingerprints, bootstrap checks, and Rust/Machin notice hashes. The sidecar
+also records the final executable's size and SHA256, after verifying the packaged
+notices. Machin's license accompanies its linked compiler; Rust notices retain
+their `rust-toolchain/share/doc/` paths.
+
+Bootstrap stamps are local build records, **not signed attestations**. Packaging
+rejects a stamped tree or Machin compiler that changed after bootstrap. Unstamped
+user-provided inputs remain supported but are explicitly `unverified-local-input`;
+requested pins do not certify them. Rust staging checks the distribution date,
+not a fresh cryptographic validation of every installed component. Tree hashes
+cover input names, modes, contents, and symlink targets without following links,
+excluding only root `.git` and `.toolchain-bootstrap.json`. They describe inputs
+before archive filtering and generation of relocatable configuration.
+
+This pins bootstrap inputs, not the entire build environment: hosted runner
+images, system packages, and rustup itself remain external inputs. It does not
+establish bit-for-bit reproducible builds or additional OS execution support.
+
 ## SDK packaging regression tests
 
 Run `python3 -m unittest discover -s toolchain/tests -p 'test_*.py' -v` from the

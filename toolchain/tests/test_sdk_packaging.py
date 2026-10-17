@@ -15,6 +15,10 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "toolchain/package-compiler-sdk.sh"
+sys.path.insert(0, str(ROOT / "toolchain"))
+from bootstrap import RUST_NOTICES
+from file_metadata import sha256
+from provenance import record_artifact
 
 
 class SdkPackagingTest(unittest.TestCase):
@@ -53,6 +57,8 @@ class SdkPackagingTest(unittest.TestCase):
         self.write(self.compiler, "bin/rustc", "rust compiler", executable=True)
         self.write(self.compiler, "bin/cargo", "cargo", executable=True)
         self.write(self.compiler, "lib/librustc_driver.so", "compiler library")
+        for name in RUST_NOTICES:
+            self.write(self.compiler, name, "notice " + name)
         self.write(self.sdk, "generated/x86_64-unknown-linux-musl.json", "{}")
         for arch in ("x86_64", "aarch64"):
             name = f"{arch}-unknown-linux-musl.json"
@@ -82,11 +88,12 @@ class SdkPackagingTest(unittest.TestCase):
             path.chmod(0o755)
         return path
 
-    def run_packager(self, with_rust=True):
+    def run_packager(self, with_rust=True, machin=None):
         args = [str(self.cosmocc)]
         args += ([str(self.source), str(self.compiler), str(self.sdk)]
                  if with_rust else ["", "", ""])
         args.append(str(ROOT / "toolchain"))
+        args.extend([str(machin) if machin else "", str(machin / "compiler") if machin else ""])
         return subprocess.run(
             [sys.executable, "-c", self.packager, *args],
             cwd=self.workdir, text=True, capture_output=True,
@@ -208,7 +215,54 @@ class SdkPackagingTest(unittest.TestCase):
     def test_c_only_payload_remains_supported(self):
         with self.package(with_rust=False) as archive:
             self.assertEqual(set(archive.namelist()),
-                             {"bin/cosmocc", "include/stdio.h", "lib/libc.a"})
+                             {"bin/cosmocc", "include/stdio.h", "lib/libc.a", "toolchain-metadata/BUILD.json"})
+
+    def test_notices_and_honest_provenance_are_packaged(self):
+        with self.package() as archive:
+            for name in RUST_NOTICES:
+                self.assertEqual(archive.read("rust-toolchain/" + name).decode(), "notice " + name)
+            record = json.loads(archive.read("toolchain-metadata/BUILD.json"))
+            self.assertEqual(record["inputs"]["cosmocc"]["verification"], "unverified-local-input")
+            self.assertEqual(record["inputs"]["rust_compiler"]["verification"], "unverified-local-input")
+            self.assertEqual(len(record["notices"]), len(RUST_NOTICES))
+            self.assertNotIn(str(self.workdir), json.dumps(record))
+
+    def test_missing_compiler_notice_fails_before_packaging(self):
+        (self.compiler / RUST_NOTICES[0]).unlink()
+        result = self.run_packager()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.archive.exists())
+
+    def test_sidecar_records_actual_artifact_and_validates_notice_hashes(self):
+        with self.package():
+            pass
+        record_artifact(self.archive)
+        record = json.loads((self.archive.parent / "BUILD.json").read_text())
+        self.assertEqual(record["artifact"]["sha256"], sha256(self.archive))
+        self.assertEqual(record["artifact"]["size"], self.archive.stat().st_size)
+        self.assertEqual((self.archive.parent / "SHA256SUMS").read_text(),
+                         f"{sha256(self.archive)}  {self.archive.name}\n")
+
+    def test_sidecar_rejects_altered_notice(self):
+        with self.package() as archive:
+            entries = [(info, archive.read(info)) for info in archive.infolist()]
+        with zipfile.ZipFile(self.archive, "w") as archive:
+            for info, data in entries:
+                archive.writestr(info, b"changed" if info.filename == "rust-toolchain/" + RUST_NOTICES[0] else data)
+        with self.assertRaisesRegex(ValueError, "notice differs"):
+            record_artifact(self.archive)
+        self.assertFalse((self.archive.parent / "BUILD.json").exists())
+
+    def test_machin_license_is_packaged_without_a_rust_payload(self):
+        machin = self.workdir / "machin"
+        self.write(machin, "LICENSE", "Machin license fixture")
+        self.write(machin, "compiler", "compiler fixture")
+        result = self.run_packager(with_rust=False, machin=machin)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with zipfile.ZipFile(self.archive) as archive:
+            self.assertEqual(archive.read("toolchain-metadata/licenses/machin/LICENSE"), b"Machin license fixture")
+            record = json.loads(archive.read("toolchain-metadata/BUILD.json"))
+            self.assertIn("machin", record["inputs"])
 
     def test_c_extraction_does_not_materialize_rust_trees(self):
         with self.package():

@@ -1,0 +1,8 @@
+{
+  "go_version": "1.23.12",
+  "machin": {
+    "repository": "https://github.com/javimosch/machin.git",
+    "revision": "9e0fb93e17c43d7ed047df80aa881037286aaae4"
+  },
+  "rust_linker_probe": "1.99.1"
+}

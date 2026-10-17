@@ -5,23 +5,15 @@ review and never retries with a reduced set of requested bootstrap inputs.
 """
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 
+from file_metadata import sha256
 
 ARCHITECTURES = ("x86_64", "aarch64")
-
-
-def sha256(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def compiled_input(target_dir, architecture, program):

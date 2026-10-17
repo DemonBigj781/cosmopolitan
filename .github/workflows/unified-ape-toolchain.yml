@@ -4,19 +4,20 @@ on:
     branches: [machin-cosmopolitan]
     paths:
       - 'toolchain/**'
+      - '.github/actions/toolchain-bootstrap/**'
+      - 'build/download-cosmocc.sh'
+      - 'third_party/rust_ape/upstream/xtask/src/config.rs'
+      - 'third_party/rust_ape/upstream/rust-toolchain.toml'
       - '.github/workflows/unified-ape-toolchain.yml'
   workflow_dispatch:
 jobs:
   bootstrap:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Download Cosmopolitan compiler
-        run: |
-          curl -fL --retry 3 https://cosmo.zip/pub/cosmocc/cosmocc.zip -o /tmp/cosmocc.zip
-          mkdir -p /tmp/cosmocc
-          unzip -q /tmp/cosmocc.zip -d /tmp/cosmocc
-          find /tmp/cosmocc -type f -name cosmocc -print
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Bootstrap pinned toolchain inputs
+        id: bootstrap
+        uses: ./.github/actions/toolchain-bootstrap
       - name: Build and smoke-test single APE
         run: |
           COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
@@ -25,13 +26,6 @@ jobs:
           COSMOCC="$COSMOCC" sh toolchain/build.sh
           ./o/toolchain/toolchain.com version
           ./o/toolchain/toolchain.com selftest
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.23'
-      - name: Build upstream Machin compiler
-        run: |
-          git clone --depth 1 https://github.com/javimosch/machin.git /tmp/machin
-          (cd /tmp/machin && go build -o /tmp/machin-compiler .)
       - name: Experiment - link Machin-generated C into the same APE
         run: |
           COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
@@ -46,7 +40,7 @@ jobs:
         run: |
           COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
           COSMOCC="$COSMOCC" sh toolchain/roundtrip-ape.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: unified-toolchain-bootstrap-ape
           path: |

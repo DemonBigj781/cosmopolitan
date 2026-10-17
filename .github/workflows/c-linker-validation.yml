@@ -5,32 +5,28 @@ on:
     branches: [machin-cosmopolitan]
     paths:
       - 'toolchain/**'
+      - '.github/actions/toolchain-bootstrap/**'
+      - 'build/download-cosmocc.sh'
+      - 'third_party/rust_ape/upstream/xtask/src/config.rs'
+      - 'third_party/rust_ape/upstream/rust-toolchain.toml'
       - '.github/workflows/c-linker-validation.yml'
 jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Download Cosmopolitan SDK
-        run: |
-          curl -fL --retry 3 https://cosmo.zip/pub/cosmocc/cosmocc.zip -o /tmp/cosmocc.zip
-          mkdir -p /tmp/cosmocc
-          unzip -q /tmp/cosmocc.zip -d /tmp/cosmocc
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Bootstrap pinned toolchain inputs
+        id: bootstrap
+        uses: ./.github/actions/toolchain-bootstrap
       - name: Build bootstrap APE
         run: |
           COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
           test -n "$COSMOCC"
           COSMOCC="$COSMOCC" sh toolchain/build.sh
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.23'
-      - name: Prepare Machin bootstrap
+      - name: Install build prerequisites
         run: |
           sudo apt-get update
           sudo apt-get install -y make
-          git clone --depth 1 https://github.com/javimosch/machin.git /tmp/machin
-          cd /tmp/machin
-          go build -o /tmp/machin-compiler .
       - name: Package embedded compiler
         run: |
           COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"

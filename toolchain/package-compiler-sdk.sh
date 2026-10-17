@@ -49,11 +49,12 @@ cp "$ARM_ZLIB" o/third_party/zlib/.aarch64/zlib.a
   o/toolchain/native-zip.o o/toolchain/machin-build.o o/toolchain/rust-build.o \
   o/toolchain/tempdir.o ${MACHIN_OBJECT:+"$MACHIN_OBJECT"} "$ZLIB_ARCHIVE"
 mkdir -p o/toolchain/compiler-payload
-python3 - "$COSMOCC_ROOT" "${RUST_APE_SOURCE:-}" "${RUST_COMPILER_ROOT:-}" "${RUST_APE_SDK_ROOT:-}" "$PWD/toolchain" <<'PY'
-import os,sys,zipfile,stat
+python3 - "$COSMOCC_ROOT" "${RUST_APE_SOURCE:-}" "${RUST_COMPILER_ROOT:-}" "${RUST_APE_SDK_ROOT:-}" "$PWD/toolchain" "${MACHIN_SRC:-}" "${MACHIN:-}" <<'PY'
+import json,os,sys,zipfile,stat
 from pathlib import Path
 sys.path.insert(0,sys.argv[5])
 from rust_sdk_resources import portable_rust_resources
+from provenance import RESOURCE, package_metadata
 root=os.path.realpath(sys.argv[1])
 rust_source=os.path.realpath(sys.argv[2]) if sys.argv[2] else None
 rust_compiler=os.path.realpath(sys.argv[3]) if sys.argv[3] else None
@@ -64,6 +65,13 @@ if rust_compiler and not os.path.isfile(os.path.join(rust_compiler,'bin','rustc'
     raise SystemExit('RUST_COMPILER_ROOT must contain bin/rustc')
 if rust_source and not os.path.isfile(os.path.join(rust_source,'run.sh')):
     raise SystemExit('RUST_APE_SOURCE must point to third_party/rust_ape')
+metadata,notices=package_metadata(
+    Path(sys.argv[5]).resolve().parent, Path(root),
+    Path(rust_compiler) if rust_compiler else None,
+    Path(rust_source) if rust_source else None,
+    Path(rust_ape_sdk) if rust_ape_sdk else None,
+    Path(sys.argv[6]) if sys.argv[6] and sys.argv[7] else None,
+    Path(sys.argv[7]) if sys.argv[6] and sys.argv[7] else None)
 out='o/toolchain/compiler-payload/cosmocc-sdk.zip'
 files=[]
 for directory,_,names in os.walk(root):
@@ -71,6 +79,9 @@ for directory,_,names in os.walk(root):
         path=os.path.join(directory,name)
         files.append(path)
 with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,allowZip64=False,strict_timestamps=False) as z:
+    z.writestr(RESOURCE,json.dumps(metadata,indent=2,sort_keys=True)+'\n')
+    for name,path in notices.items():
+        z.write(path,name)
     for path in sorted(files):
         arc=os.path.relpath(path,root)
         if os.path.islink(path):
@@ -160,6 +171,7 @@ python3 toolchain/attach_sdk.py \
   --sdk o/toolchain/compiler-payload/cosmocc-sdk.zip \
   --output o/toolchain/compiler-payload/toolchain-with-sdk.com \
   --zipcopy "$COSMOCC_ROOT/bin/zipcopy"
+python3 toolchain/provenance.py o/toolchain/compiler-payload/toolchain-with-sdk.com
 o/toolchain/compiler-payload/toolchain-with-sdk.com selftest
 if [[ -n "$MACHIN_OBJECT" ]]; then
   o/toolchain/compiler-payload/toolchain-with-sdk.com machin-compiler --full toolchain/machin_demo.mfl > o/toolchain/combined-machin-demo.c
