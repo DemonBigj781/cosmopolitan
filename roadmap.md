@@ -136,6 +136,34 @@ See [the bootstrap reference](toolchain/README.md#pinned-bootstrap-and-artifact-
 
 No macOS execution/review or ARM64 execution was performed, and SSH was not used.
 
+### Cross-OS generated-program execution checkpoint
+
+After the operator authorized hosted macOS and ARM runtime testing, all 11
+workflows passed for source commit `f0a6de22d1b032a6ed22bc96fc5302c39ebed642`.
+Run `39073757403` passed all 13 jobs, including a six-runner execution matrix:
+
+| Runner | Execution mode | Program results |
+| --- | --- | --- |
+| `ubuntu-24.04` | Native Linux x86-64 | 6/6 passed |
+| `ubuntu-24.04-arm` | Native Linux ARM64 | 6/6 passed |
+| `macos-26-intel` | Native macOS x86-64 | 6/6 passed |
+| `macos-26` | Native macOS ARM64 | 6/6 passed |
+| `windows-2022` | Native Windows x86-64 | 6/6 passed |
+| `windows-11-arm` | Windows ARM64 host, x64 emulation | 6/6 passed |
+
+Each runner consumed the same six Linux-built C, C++, Rust `no_std`, Machin,
+Rust std, and Rust threading program bytes. Downloaded evidence independently
+confirmed all 36 exits/outputs, original and executed-copy hashes, host
+architectures, and execution labels. Apple Silicon compiled only the pinned
+runtime loader, not the applications. The harness's 15 unit tests also passed
+on every runner; the complete 80-test local suite passed with GCC and Clang.
+
+This establishes the runtime-test baseline for these programs, not general
+compiler-host portability or comprehensive OS compatibility. Compiler-host
+adaptation is the next phase. No Xavier access, system changes, or cleanup took
+place during this checkpoint. The local recovery tag is
+`checkpoint/cross-os-programs-ci-f0a6de22`.
+
 ## 2. Current milestone: self-contained existing toolchain
 
 - [x] Prove native ZIPOS reads from the real SDK without extraction, using the
@@ -181,7 +209,7 @@ completion. Eliminating the remaining necessary materialization is separate work
 - [ ] Run the same artifact's compiler smoke tests on Linux and Windows.
 - [x] Produce macOS-targeted APE build outputs. The earlier compile-only scope
   is retained in historical checkpoints; hosted runtime tests are now authorized.
-- [ ] Run the same six generated programs on hosted Linux x86-64/ARM64,
+- [x] Run the same six generated programs on hosted Linux x86-64/ARM64,
   macOS Intel/ARM64, and Windows x86-64/ARM64 hosts. Record x64 emulation on
   Windows ARM separately; fix the test harness before compiler-host adaptations.
 - [ ] Keep launcher, compiler/runtime, and generated-program results distinct.
