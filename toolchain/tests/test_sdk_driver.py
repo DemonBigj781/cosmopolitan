@@ -94,9 +94,14 @@ class SdkDriverTest(unittest.TestCase):
     def test_compiler_script_is_explicitly_invoked_through_sh(self):
         result = self.run_driver("cc", "--version", system="Windows")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines()[:2], ["exec=sh", "arg=sh"])
+        self.assertEqual(result.stdout.splitlines()[:2], ["exec=sh.exe", "arg=sh.exe"])
         self.assertTrue(result.stdout.splitlines()[2].endswith("/bin/cosmocc"))
         self.assertEqual(result.stdout.splitlines()[-1], "arg=--version")
+
+    def test_unix_shell_name_does_not_gain_a_windows_suffix(self):
+        result = self.run_driver("cc", "--version")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[:2], ["exec=sh", "arg=sh"])
 
     def test_unsupported_rust_host_fails_before_sdk_extraction(self):
         for system in ("Windows", "Darwin"):

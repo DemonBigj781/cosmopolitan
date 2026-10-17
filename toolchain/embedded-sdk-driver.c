@@ -182,8 +182,9 @@ int embedded_sdk_main(int argc,char **argv) {
   char **args=calloc((size_t)argc+6,sizeof(char*));
   if(!args) return 1;
   int n=0;
-  /* Windows CreateProcess does not interpret the cosmocc shebang. */
-  args[n++]="sh";
+  /* CreateProcess does not interpret shebangs, and commandv searches exact
+   * filenames rather than applying Windows PATHEXT suffixes. */
+  args[n++]=IsWindows()?"sh.exe":"sh";
   args[n++]=compiler;
   if(is_cpp) {
     args[n++]="-I";
