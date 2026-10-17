@@ -64,6 +64,39 @@ static int rust_source_available(void) {
   }
   return 0;
 }
+/* The staged Rust sysroot is a host toolchain, not a portable APE compiler.
+ * Inspect the packaged ELF before extracting it or invoking a foreign binary. */
+static int rust_host_machine(void) {
+  unsigned char header[20];
+  FILE *file=fopen("/zip/rust-toolchain/bin/rustc","rb");
+  if(!file)return 0;
+  size_t got=fread(header,1,sizeof(header),file);
+  int failed=ferror(file);
+  if(fclose(file))failed=1;
+  if(failed || got!=sizeof(header) || memcmp(header,"\177ELF",4) ||
+     header[4]!=2 || header[5]!=1 || (header[7]!=0 && header[7]!=3) || header[19])return 0;
+  return header[18]==62 || header[18]==183 ? header[18] : 0;
+}
+static const char *rust_host_name(int machine) {
+  return machine==62 ? "Linux x86-64" : machine==183 ? "Linux ARM64" : "unrecognized compiler format";
+}
+static int rust_host_available(void) {
+  if(access("/zip/rust-toolchain/bin/rustc",R_OK)) {
+    fputs("Rust compiler not packaged; set RUST_COMPILER_ROOT at packaging time\n",stderr);
+    return 2;
+  }
+  int machine=rust_host_machine();
+#if defined(__aarch64__)
+  int native_machine=183;
+#else
+  int native_machine=62;
+#endif
+  if(!IsLinux() || machine!=native_machine) {
+    fprintf(stderr,"Unsupported packaged Rust host: requires %s; no SDK extracted\n",rust_host_name(machine));
+    return 126;
+  }
+  return 0;
+}
 static int rust_status(void) {
   if(rust_source_available())return 1;
   /* Retain the established status line: the marker was extracted in memory,
@@ -72,6 +105,7 @@ static int rust_status(void) {
   puts("Resource access: ZIPOS (memory only; no SDK files extracted)");
   puts(access("/zip/rust-toolchain/bin/rustc",X_OK) ? "Rust compiler: not packaged" : "Rust compiler: packaged");
   puts(access("/zip/rust-toolchain/bin/cargo",X_OK) ? "Cargo: not packaged" : "Cargo: packaged");
+  printf("Rust compiler platform: %s\n",rust_host_name(rust_host_machine()));
   int target=access("/zip/rust-ape-sdk/generated/x86_64-unknown-linux-musl.json",R_OK);
   puts(target ? "Rust-APE patched target: not packaged" : "Rust-APE patched target: packaged");
   puts(target || access("/zip/rust-ape-sdk/vendor/cosmocc/bin/apelink",X_OK) ?
@@ -89,9 +123,11 @@ int embedded_sdk_main(int argc,char **argv) {
   }
   int is_rust=!strcmp(argv[1],"rust");
   if(is_rust && rust_source_available())return 1;
+  int rc;
+  if(is_rust && (rc=rust_host_available()))return rc;
   char self[4096],compiler[4096];
   if(!realpath(argv[0],self)) { perror("resolve executable"); return 1; }
-  int rc=materialize(self,is_rust?SDK_RUST:SDK_C);
+  rc=materialize(self,is_rust?SDK_RUST:SDK_C);
   if(rc)return rc;
   const char *tmp=sdk_temp.path;
   if (is_rust) {
@@ -146,6 +182,8 @@ int embedded_sdk_main(int argc,char **argv) {
   char **args=calloc((size_t)argc+6,sizeof(char*));
   if(!args) return 1;
   int n=0;
+  /* Windows CreateProcess does not interpret the cosmocc shebang. */
+  args[n++]="sh";
   args[n++]=compiler;
   if(is_cpp) {
     args[n++]="-I";

@@ -82,6 +82,14 @@ class SmokeRunnerTest(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertEqual(result["remaining_owned_temp_paths"], ["cosmo-sdk-leak"])
 
+    def test_windows_executes_an_identical_exe_copy_of_generated_ape(self):
+        with patch("smoke_compilers.platform.system", return_value="Windows"):
+            result, run = self.run_probe()
+        self.assertTrue(result["passed"])
+        executable = Path(run.call_args.args[0][-1])
+        self.assertEqual(executable.suffix, ".exe")
+        self.assertEqual(executable.read_bytes(), executable.with_suffix(".com").read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()

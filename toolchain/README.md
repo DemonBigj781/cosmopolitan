@@ -232,8 +232,8 @@ compatibility.
 
 The operator has now authorized cross-OS program execution tests in the existing
 GitHub-hosted workflow. This supersedes the earlier macOS compile-only restriction
-for these tests; it does not authorize compiler-host portability work or a broad
-platform compatibility claim.
+for these tests. Program-output results do not establish compiler-host portability
+or a broad platform compatibility claim; compiler-host probes are separate below.
 
 `tests/program_matrix.py` assembles the four existing compiler-smoke outputs and
 the two Rust std/threading programs into one small, checksummed artifact. It
@@ -255,6 +255,31 @@ matching `program-results-*` artifacts for the actual execution results.
 
 Xavier is an optional hardware-specific testing ground, not a build server or a
 required CI runner. This matrix does not upgrade, configure, or clean that host.
+
+## Compiler-host probes
+
+`tests/compiler_hosts.py` verifies the packaged toolchain's identity, then checks
+launcher commands and C/C++/Rust/Machin builds independently on each hosted target.
+It reuses the same runtime loaders and compiler smoke samples rather than swapping
+in host-installed compilers. Each supported compiler must produce an APE that runs
+with the expected output and cleans its owned SDK temporary directories.
+
+The C/C++ driver explicitly invokes the packaged `cosmocc` script through `sh`
+on `PATH`, including Windows, where native process creation does not interpret
+its shebang. Shell utilities remain host prerequisites, not bundled capabilities.
+
+The current shared artifact embeds a **Linux x86-64 Rust compiler/Cargo sysroot**.
+`rust status` reports the packaged compiler's platform. Rust commands inspect the
+compiler header and reject incompatible OS/CPU combinations before extracting
+the SDK. They do not fall back to a host compiler or try to interpret an ELF as
+a shell script. A different OS's native Rust toolchain is not added by this check.
+
+CI runs the Rust commands on every host. Outside Linux x86-64 it requires the
+specific unsupported-host rejection and no SDK materialization or owned temporary
+leaks. These records retain `passed: false`, `supported: false`, and a separate
+`rejection_validated` field; a green host-contract job must not be reported as a
+successful Rust build there. Other errors remain failures. Launcher records,
+compiler records, and generated-program records remain distinct.
 
 ## Next stages
 

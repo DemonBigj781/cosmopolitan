@@ -4,6 +4,8 @@ import argparse
 import json
 import os
 from pathlib import Path
+import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -33,7 +35,7 @@ def probe(toolchain, language, output_dir, ape_loader=None):
     directory.mkdir()  # Do not overwrite evidence from a previous run.
     temporary = directory / "temporary"
     temporary.mkdir()
-    environment = dict(os.environ, TMPDIR=str(temporary))
+    environment = dict(os.environ, TMPDIR=str(temporary), TMP=str(temporary), TEMP=str(temporary))
     flags, source, expected = PROBES[language]
     binary = directory / "hello.com"
     prefix = [str(ape_loader)] if ape_loader else []
@@ -58,8 +60,14 @@ def probe(toolchain, language, output_dir, ape_loader=None):
         elif components != EXPECTED_COMPONENTS[language]:
             result["error"] = "unexpected or repeated SDK component extraction"
         else:
+            executable = binary
+            if platform.system() == "Windows":
+                executable = binary.with_suffix(".exe")
+                shutil.copyfile(binary, executable)
+                if executable.read_bytes() != binary.read_bytes():
+                    raise OSError("Windows executable copy differs from compiler output")
             with (directory / "run.log").open("w") as log:
-                run = subprocess.run([*prefix, str(binary)], stdout=log,
+                run = subprocess.run([*prefix, str(executable)], stdout=log,
                                      stderr=subprocess.STDOUT, cwd=directory,
                                      timeout=60)
             result["run_exit"] = run.returncode
