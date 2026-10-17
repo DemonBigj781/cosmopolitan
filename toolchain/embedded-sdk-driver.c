@@ -46,6 +46,33 @@ static int run(char *const argv[]) {
   if(waited<0) return 125;
   return WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);
 }
+static int run_shell(char *const argv[]) {
+  if(!IsWindows())return run(argv);
+  int count=0,rc=1;
+  while(argv[count])count++;
+  char **args=calloc((size_t)count+1,sizeof(char*));
+  if(!args)return 1;
+  for(int i=0;i<count;i++) {
+    if(!(args[i]=strdup(argv[i])))goto done;
+    char *p=args[i];
+    if(strlen(p)<3)continue;
+    /* Win32 spawning translates /C/... to C:\... . A shell's dirname
+     * expansions need slashes, so pass C:/... through that boundary instead.
+     * Only complete drive-rooted arguments are paths; compiler flags and
+     * backslash-containing macro definitions must remain byte-for-byte intact. */
+    if(p[0]=='/' && ((p[1]>='A' && p[1]<='Z') || (p[1]>='a' && p[1]<='z')) && p[2]=='/') {
+      p[0]=p[1];p[1]=':';
+    }
+    if(((p[0]>='A' && p[0]<='Z') || (p[0]>='a' && p[0]<='z')) &&
+       p[1]==':' && (p[2]=='/' || p[2]=='\\'))
+      for(char *q=p;*q;q++)if(*q=='\\')*q='/';
+  }
+  rc=run(args);
+done:
+  for(int i=0;i<count;i++)free(args[i]);
+  free(args);
+  return rc;
+}
 static int rust_source_available(void) {
   static const char expected[]="Rust-APE source snapshot;";
   char marker[sizeof(expected)-1];
@@ -193,7 +220,7 @@ int embedded_sdk_main(int argc,char **argv) {
   for(int i=2;i<argc;i++) args[n++]=argv[i];
   if(is_cpp && !compile_only) args[n++]="-lstdc++";
   args[n]=NULL;
-  rc=run(args);
+  rc=run_shell(args);
   free(args);
   return rc;
 }

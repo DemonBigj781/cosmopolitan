@@ -268,7 +268,10 @@ The C/C++ driver explicitly invokes the packaged `cosmocc` script through `sh`
 on Unix or `sh.exe` on Windows, found on `PATH`. Native Windows process creation
 does not interpret its shebang, and Cosmopolitan's executable lookup requires
 the exact filename. Shell utilities remain host prerequisites, not bundled
-capabilities.
+capabilities. Drive-rooted script/file arguments use `C:/...` spelling at the
+Windows shell boundary so native argument conversion cannot break the SDK's
+slash-based directory calculations. Compiler flags and macro strings are not
+rewritten.
 
 The current shared artifact embeds a **Linux x86-64 Rust compiler/Cargo sysroot**.
 `rust status` reports the packaged compiler's platform. Rust commands inspect the

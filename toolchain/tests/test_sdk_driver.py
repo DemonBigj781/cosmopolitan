@@ -103,6 +103,20 @@ class SdkDriverTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines()[:2], ["exec=sh", "arg=sh"])
 
+    def test_windows_drive_arguments_keep_shell_compatible_separators(self):
+        result = self.run_driver("cc", "/C/source/input.c", "-o", r"D:\build\out.com",
+                                 r"-DMESSAGE=literal\backslash", system="Windows")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertIn("arg=C:/source/input.c", lines)
+        self.assertIn("arg=D:/build/out.com", lines)
+        self.assertIn(r"arg=-DMESSAGE=literal\backslash", lines)
+
+    def test_unix_drive_like_arguments_are_not_rewritten(self):
+        result = self.run_driver("cc", "/C/source/input.c", r"D:\build\out.com")
+        self.assertIn("arg=/C/source/input.c", result.stdout.splitlines())
+        self.assertIn(r"arg=D:\build\out.com", result.stdout.splitlines())
+
     def test_unsupported_rust_host_fails_before_sdk_extraction(self):
         for system in ("Windows", "Darwin"):
             with self.subTest(system=system):
