@@ -71,8 +71,8 @@ outside the test's replaced `/tmp` mount.
 The CI artifact contains 10,587 resources, including the original executable
 resources. Its staged host Rust compiler contains fewer files than the local
 bootstrap sysroot; do not conflate that inventory with the local counts above.
-The hosted workflows still have some unpinned upstream downloads, so fully
-reproducible bootstrap inputs remain a separate task below.
+That checkpoint still used some unpinned upstream downloads; the bootstrap
+checkpoint below replaces them with explicit input pins.
 
 ### SDK lifetime and relocation checkpoint
 
@@ -107,6 +107,31 @@ runner, or hardware access occurred. ARM64 was compiled but not executed, and th
 operator's deferred ARM machine was not contacted. These are program-output
 results, not Windows/macOS hosting support for the compiler or Cargo.
 
+### Pinned bootstrap and provenance checkpoint
+
+All 11 triggered workflows passed for source commit
+`8a37d57300ed28e87a0fc62af8caf9fc85d1b404`. Run `39065934473` passed packaging,
+the four independent Linux compiler probes, relocated dual-architecture Rust
+builds, and Windows x86-64 execution of the generated programs. All 65 local
+regression tests passed with both GCC and Clang.
+
+The shared bootstrap uses Cosmocc's existing Rust-APE version/hash definitions,
+the vendored nightly date, and exact Go/Machin/Rust-probe pins. It refuses existing
+destinations, verifies the downloaded Cosmocc archive, and checks the Machin
+revision and Go version. Staged Rust preserves Cargo license files and Rust
+compiler/library copyright notices; the linked Machin compiler's license is also
+packaged. Missing required notices and changed stamped inputs fail packaging.
+
+The native ZIP contains input provenance and notice hashes; external `BUILD.json`
+and `SHA256SUMS` record the final toolchain artifact. Unstamped local inputs remain
+explicitly unverified. Bootstrap stamps are local records, not signed attestations;
+Rust staging checks its distribution date rather than revalidating every installed
+component against its download hash. Hosted runner images, system packages, and
+rustup remain external inputs, so bit-for-bit reproducibility is not established.
+See [the bootstrap reference](toolchain/README.md#pinned-bootstrap-and-artifact-provenance).
+
+No macOS execution/review or ARM64 execution was performed, and SSH was not used.
+
 ## 2. Current milestone: self-contained existing toolchain
 
 - [x] Prove native ZIPOS reads from the real SDK without extraction, using the
@@ -130,15 +155,17 @@ results, not Windows/macOS hosting support for the compiler or Cargo.
 - [ ] Audit shell utilities, dynamic libraries, loaders, compiler subprocesses,
   and build-time versus runtime dependencies. Packaged `rustc` and Cargo are
   currently Linux ELF binaries, not portable APE compiler implementations.
-- [ ] Pin reproducible bootstrap inputs and record artifact checksums/licenses.
+- [x] Pin toolchain bootstrap inputs and record artifact checksums/licenses.
+  Shared bootstrap, notice preservation, provenance, and hosted regressions
+  passed; this does not pin the complete runner environment.
 - [ ] Measure size, startup, resident memory, extraction I/O, and dependency
   count before optimizing. Preserve correct output and diagnostics.
 
 The local staged SDK archive is about 1.17 GB compressed and 3.75 GB uncompressed.
 The local migrated artifact adds the executable's three original resources, for
-14,268 unique paths. The newer CI artifact contains 10,592 entries. Compiler
-commands still materialize their needed component files, but no longer repeat
-whole-SDK extraction inside `rust build` or retain owned directories on normal
+14,268 unique paths. The earlier SDK-lifetime CI artifact contains 10,592 entries.
+Compiler commands still materialize their needed component files, but no longer
+repeat whole-SDK extraction inside `rust build` or retain owned directories on normal
 completion. Eliminating the remaining necessary materialization is separate work.
 
 ## 3. Portability and regression gates
