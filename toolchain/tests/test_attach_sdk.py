@@ -96,6 +96,14 @@ class AttachSdkTest(unittest.TestCase):
             attach_sdk(self.executable, self.sdk, self.executable, Path("zipcopy"))
         self.assertEqual(self.executable.read_bytes(), original)
 
+    def test_native_archive_limit_fails_before_zipcopy_and_preserves_output(self):
+        self.output.write_bytes(b"previous output")
+        with patch("attach_sdk.MAX_NATIVE_ARCHIVE_SIZE", 100), patch("attach_sdk.subprocess.run") as run:
+            with self.assertRaisesRegex(ValueError, "2 GiB"):
+                attach_sdk(self.executable, self.sdk, self.output, Path("zipcopy"))
+        run.assert_not_called()
+        self.assertEqual(self.output.read_bytes(), b"previous output")
+
 
 if __name__ == "__main__":
     unittest.main()

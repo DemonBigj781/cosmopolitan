@@ -17,9 +17,14 @@ static int under(const char *name,const char *directory){
   size_t n=strlen(directory);
   return !strncmp(name,directory,n) && (!name[n] || name[n]=='/');
 }
-static int selected(const char *name,enum SdkComponent component){
+static int selected(const char *name,enum SdkComponent component,const char *rust_host){
   if(component==SDK_ALL)return 1;
-  if(component==SDK_RUST)return under(name,"rust-toolchain");
+  if(component==SDK_RUST){
+    char prefix[256];
+    if(snprintf(prefix,sizeof(prefix),"rust-toolchain/hosts/%s",rust_host)>=(int)sizeof(prefix))return 0;
+    return under(name,prefix) || under(name,"rust-toolchain/targets") ||
+           !strcmp(name,"rust-toolchain/hosts.json") || !strcmp(name,"rust-toolchain/.toolchain-bootstrap.json");
+  }
   if(component==SDK_RUST_APE)return under(name,"rust-ape-sdk");
   return !under(name,"rust-toolchain") && !under(name,"rust-ape-sdk") &&
          !under(name,"rust-ape") && strcmp(name,".cosmo") && strncmp(name,".symtab.",8);
@@ -72,7 +77,7 @@ static int safe_link_target(const char *name,const char *target){
   }
   return 1;
 }
-static int link_in_component(const char *name,const char *target,enum SdkComponent component){
+static int link_in_component(const char *name,const char *target,enum SdkComponent component,const char *rust_host){
   if(component==SDK_ALL)return 1;
   char joined[4096],resolved[4096]="";
   const char *slash=strrchr(name,'/');
@@ -93,7 +98,7 @@ static int link_in_component(const char *name,const char *target,enum SdkCompone
       memcpy(resolved+n,part,m+1);
     }
   }
-  return selected(resolved,component);
+  return selected(resolved,component,rust_host);
 }
 static int inflate_entry(FILE *f,uint64_t off,uint32_t clen,uint32_t ulen,
                          int method,unsigned char **result){
@@ -116,8 +121,13 @@ static int inflate_entry(FILE *f,uint64_t off,uint32_t clen,uint32_t ulen,
   if(!ok){free(out);return -1;}
   out[ulen]=0;*result=out;return 0;
 }
-int extract_sdk_zip(const char *archive,const char *root,enum SdkComponent component){
+int extract_sdk_zip(const char *archive,const char *root,enum SdkComponent component,const char *rust_host){
   if(component<SDK_C || component>SDK_ALL)return -1;
+  if(component==SDK_RUST){
+    if(!rust_host || !*rust_host || strlen(rust_host)>128)return -1;
+    for(const char *p=rust_host;*p;p++)
+      if(!((*p>='a' && *p<='z') || (*p>='0' && *p<='9') || *p=='-' || *p=='_'))return -1;
+  }
   FILE *f=fopen(archive,"rb");if(!f)return -1;
   int rc=-1;unsigned char end[22],head[46],local[30];
   if(fseek(f,0,SEEK_END))goto done;
@@ -143,7 +153,7 @@ int extract_sdk_zip(const char *archive,const char *root,enum SdkComponent compo
     name[nl]=0;
     if(memchr(name,0,nl)||!safe(name)||snprintf(path,sizeof(path),"%s/%s",root,name)>=(int)sizeof(path)){fprintf(stderr,"ZIP: unsafe entry: %s\n",name);goto done;}
     pos+=46u+nl+el+cl;
-    if(!selected(name,component))continue;
+    if(!selected(name,component,rust_host))continue;
     if(!read_at(f,loff,local,30)||u32(local)!=0x04034b50)goto done;
     uint64_t data=(uint64_t)loff+30+u16(local+26)+u16(local+28);
     if(data+compressed>(uint64_t)size)goto done;
@@ -154,7 +164,7 @@ int extract_sdk_zip(const char *archive,const char *root,enum SdkComponent compo
     if((mode&0170000)==0120000){
       /* Symlink target must remain inside SDK tree; reject absolute/traversal. */
       if(!plain||memchr(bytes,0,plain)||!safe_link_target(name,(char*)bytes)||
-         !link_in_component(name,(char*)bytes,component)||symlink((char*)bytes,path)){fprintf(stderr,"ZIP: symlink rejected: %s -> %s\n",name,bytes);free(bytes);goto done;}
+         !link_in_component(name,(char*)bytes,component,rust_host)||symlink((char*)bytes,path)){fprintf(stderr,"ZIP: symlink rejected: %s -> %s\n",name,bytes);free(bytes);goto done;}
     }else if(name[nl-1]=='/'){
       if(mkdir(path,0700)&&errno!=EEXIST){free(bytes);goto done;}
     }else{

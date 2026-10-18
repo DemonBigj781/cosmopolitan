@@ -61,8 +61,8 @@ rust_compiler=os.path.realpath(sys.argv[3]) if sys.argv[3] else None
 rust_ape_sdk=os.path.realpath(sys.argv[4]) if sys.argv[4] else None
 if rust_ape_sdk and not os.path.isfile(os.path.join(rust_ape_sdk,'generated','x86_64-unknown-linux-musl.json')):
     raise SystemExit('RUST_APE_SDK_ROOT must contain generated/x86_64-unknown-linux-musl.json')
-if rust_compiler and not os.path.isfile(os.path.join(rust_compiler,'bin','rustc')):
-    raise SystemExit('RUST_COMPILER_ROOT must contain bin/rustc')
+if rust_compiler and not os.path.isfile(os.path.join(rust_compiler,'hosts.json')):
+    raise SystemExit('RUST_COMPILER_ROOT must be a staged multi-host Rust SDK with hosts.json')
 if rust_source and not os.path.isfile(os.path.join(rust_source,'run.sh')):
     raise SystemExit('RUST_APE_SOURCE must point to third_party/rust_ape')
 metadata,notices=package_metadata(
@@ -109,8 +109,11 @@ with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,al
     if rust_compiler:
         count=0
         for directory, dirs, names in os.walk(rust_compiler):
-            dirs.sort()
-            for name in sorted(names):
+            links=[name for name in dirs if os.path.islink(os.path.join(directory,name))]
+            # Shared target directories must exist before Windows creates aliases.
+            dirs[:] = sorted((name for name in dirs if name not in links),
+                             key=lambda name: (directory == rust_compiler and name == 'hosts', name))
+            for name in sorted(names+links):
                 path=os.path.join(directory,name)
                 arc='rust-toolchain/'+os.path.relpath(path,rust_compiler)
                 if os.path.islink(path):

@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include "sdk_resources.h"
@@ -16,6 +17,23 @@ __static_yoink("zipos");
 
 static struct ToolchainTemp sdk_temp = TOOLCHAIN_TEMP_INIT;
 static unsigned sdk_loaded;
+
+#define WINDOWS_SHELL_RESET \
+  "unset _COSMO_FDS_V2 _COSMO_PID _COSMO_PPID _COSMO_STOP_CHURN " \
+  "_COSMO_STOP_EVENT _SIGS _MASK _IGNS; "
+
+static const char *rust_host_triple(void) {
+  /* The Windows PE member is x64, including execution on Windows ARM. */
+  if(IsWindows())return "x86_64-pc-windows-msvc";
+#if defined(__aarch64__)
+  if(IsLinux())return "aarch64-unknown-linux-gnu";
+  if(IsXnu())return "aarch64-apple-darwin";
+#else
+  if(IsLinux())return "x86_64-unknown-linux-gnu";
+  if(IsXnu())return "x86_64-apple-darwin";
+#endif
+  return NULL;
+}
 
 int embedded_sdk_cleanup(void) {
   int rc=toolchain_temp_close(&sdk_temp);
@@ -30,7 +48,7 @@ static int materialize(const char *self,enum SdkComponent component) {
   if(sdk_temp.fd==-1 && toolchain_temp_open(&sdk_temp,"cosmo-sdk")) {
     perror("create SDK temporary directory"); return 1;
   }
-  if(extract_sdk_zip(self,sdk_temp.path,component)) {
+  if(extract_sdk_zip(self,sdk_temp.path,component,component==SDK_RUST?rust_host_triple():NULL)) {
     fputs("SDK extraction failed\n",stderr); return 1;
   }
   sdk_loaded|=bit;
@@ -100,7 +118,7 @@ static int run(char *const argv[]) {
   if(io_error)return io_error;
   return WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);
 }
-static int run_shell(char *const argv[]) {
+static int run_external(char *const argv[]) {
   if(!IsWindows())return run(argv);
   int count=0,rc=1;
   while(argv[count])count++;
@@ -145,35 +163,51 @@ static int rust_source_available(void) {
   }
   return 0;
 }
-/* The staged Rust sysroot is a host toolchain, not a portable APE compiler.
- * Inspect the packaged ELF before extracting it or invoking a foreign binary. */
-static int rust_host_machine(void) {
-  unsigned char header[20];
-  FILE *file=fopen("/zip/rust-toolchain/bin/rustc","rb");
+static int rust_paths(const char *root,char *sysroot,char *rustc,char *cargo) {
+  const char *host=rust_host_triple(),*suffix=IsWindows()?".exe":"";
+  if(!host)return -1;
+  return snprintf(sysroot,4096,"%s/rust-toolchain/hosts/%s",root,host)>=4096 ||
+         snprintf(rustc,4096,"%s/bin/rustc%s",sysroot,suffix)>=4096 ||
+         snprintf(cargo,4096,"%s/bin/cargo%s",sysroot,suffix)>=4096 ? -1 : 0;
+}
+static uint32_t read32le(const unsigned char *p) {
+  return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
+}
+/* Host selection is explicit. Reject a mislabeled binary before extraction. */
+static int rust_binary_matches(const char *path) {
+  unsigned char header[64];
+  FILE *file=fopen(path,"rb");
   if(!file)return 0;
   size_t got=fread(header,1,sizeof(header),file);
-  int failed=ferror(file);
-  if(fclose(file))failed=1;
-  if(failed || got!=sizeof(header) || memcmp(header,"\177ELF",4) ||
-     header[4]!=2 || header[5]!=1 || (header[7]!=0 && header[7]!=3) || header[19])return 0;
-  return header[18]==62 || header[18]==183 ? header[18] : 0;
-}
-static const char *rust_host_name(int machine) {
-  return machine==62 ? "Linux x86-64" : machine==183 ? "Linux ARM64" : "unrecognized compiler format";
+  int match=0;
+#if defined(__aarch64__)
+  int elf_machine=183;uint32_t macho_machine=0x0100000c;
+#else
+  int elf_machine=62;uint32_t macho_machine=0x01000007;
+#endif
+  if(got==sizeof(header) && !ferror(file)) {
+    if(IsLinux() && !memcmp(header,"\177ELF\2\1",6))
+      match=header[18]==elf_machine && header[19]==0;
+    else if(IsXnu() && read32le(header)==0xfeedfacf)
+      match=read32le(header+4)==macho_machine;
+    else if(IsWindows() && !memcmp(header,"MZ",2)) {
+      unsigned char pe[6];
+      match=!fseek(file,read32le(header+0x3c),SEEK_SET) && fread(pe,1,sizeof(pe),file)==sizeof(pe) &&
+            !memcmp(pe,"PE\0\0\x64\x86",6);
+    }
+  }
+  if(fclose(file))match=0;
+  return match;
 }
 static int rust_host_available(void) {
-  if(access("/zip/rust-toolchain/bin/rustc",R_OK)) {
-    fputs("Rust compiler not packaged; set RUST_COMPILER_ROOT at packaging time\n",stderr);
+  const char *host=rust_host_triple();
+  char sysroot[4096],rustc[4096],cargo[4096];
+  if(rust_paths("/zip",sysroot,rustc,cargo) || access(rustc,R_OK) || access(cargo,R_OK)) {
+    fprintf(stderr,"Rust compiler not packaged for %s; no SDK extracted\n",host?host:"this platform");
     return 2;
   }
-  int machine=rust_host_machine();
-#if defined(__aarch64__)
-  int native_machine=183;
-#else
-  int native_machine=62;
-#endif
-  if(!IsLinux() || machine!=native_machine) {
-    fprintf(stderr,"Unsupported packaged Rust host: requires %s; no SDK extracted\n",rust_host_name(machine));
+  if(!rust_binary_matches(rustc) || !rust_binary_matches(cargo)) {
+    fprintf(stderr,"Packaged Rust compiler does not match %s; no SDK extracted\n",host);
     return 126;
   }
   return 0;
@@ -184,9 +218,12 @@ static int rust_status(void) {
    * not onto disk. State that distinction explicitly for humans and tests. */
   puts("PASS: embedded Rust-APE source snapshot extracted");
   puts("Resource access: ZIPOS (memory only; no SDK files extracted)");
-  puts(access("/zip/rust-toolchain/bin/rustc",X_OK) ? "Rust compiler: not packaged" : "Rust compiler: packaged");
-  puts(access("/zip/rust-toolchain/bin/cargo",X_OK) ? "Cargo: not packaged" : "Cargo: packaged");
-  printf("Rust compiler platform: %s\n",rust_host_name(rust_host_machine()));
+  char sysroot[4096],rustc[4096],cargo[4096];
+  int unavailable=rust_paths("/zip",sysroot,rustc,cargo);
+  puts(unavailable || access(rustc,X_OK) ? "Rust compiler: not packaged" : "Rust compiler: packaged");
+  puts(unavailable || access(cargo,X_OK) ? "Cargo: not packaged" : "Cargo: packaged");
+  const char *host=rust_host_triple();
+  printf("Rust compiler platform: %s\n",host?host:"unsupported platform");
   int target=access("/zip/rust-ape-sdk/generated/x86_64-unknown-linux-musl.json",R_OK);
   puts(target ? "Rust-APE patched target: not packaged" : "Rust-APE patched target: packaged");
   puts(target || access("/zip/rust-ape-sdk/vendor/cosmocc/bin/apelink",X_OK) ?
@@ -213,10 +250,7 @@ int embedded_sdk_main(int argc,char **argv) {
   const char *tmp=sdk_temp.path;
   if (is_rust) {
     char rustc[4096],cargo[4096],sysroot[4096];
-    if (snprintf(rustc,sizeof(rustc),"%s/rust-toolchain/bin/rustc",tmp)>=(int)sizeof(rustc) ||
-        snprintf(sysroot,sizeof(sysroot),"%s/rust-toolchain",tmp)>=(int)sizeof(sysroot) ||
-        snprintf(cargo,sizeof(cargo),"%s/rust-toolchain/bin/cargo",tmp)>=(int)sizeof(cargo))
-      return 1;
+    if(rust_paths(tmp,sysroot,rustc,cargo))return 1;
     if (access(rustc,X_OK)) {
       fputs("Rust compiler not packaged; set RUST_COMPILER_ROOT at packaging time\\n",stderr);
       return 2;
@@ -226,13 +260,21 @@ int embedded_sdk_main(int argc,char **argv) {
       fputs("Cargo not packaged; set RUST_COMPILER_ROOT with bin/cargo\\n",stderr);
       return 2;
     }
-    if(is_cargo && setenv("RUSTC",rustc,1)) {
-      perror("set RUSTC");
-      return 1;
+    if(is_cargo) {
+      char rustdoc[4096];
+      if(snprintf(rustdoc,sizeof(rustdoc),"%s/bin/rustdoc%s",sysroot,IsWindows()?".exe":"")>=(int)sizeof(rustdoc))return 1;
+      if(setenv("RUSTC",rustc,1) || setenv("RUSTDOC",rustdoc,1)) {
+        perror("set packaged Rust tools");return 1;
+      }
     }
-    char **rargs=calloc((size_t)argc+4,sizeof(char*));
+    char **rargs=calloc((size_t)argc+7,sizeof(char*));
     if (!rargs) return 1;
     int n=0;
+    if(IsWindows()) {
+      rargs[n++]="sh.exe";
+      rargs[n++]="-c";
+      rargs[n++]=WINDOWS_SHELL_RESET "exec \"$0\" \"$@\"";
+    }
     rargs[n++]=is_cargo?cargo:rustc;
     if(!is_cargo) {
       rargs[n++]="--sysroot";
@@ -240,7 +282,7 @@ int embedded_sdk_main(int argc,char **argv) {
     }
     for(int i=3;i<argc;i++)rargs[n++]=argv[i];
     rargs[n]=NULL;
-    rc=run(rargs);
+    rc=run_external(rargs);
     free(rargs);
     return rc;
   }
@@ -271,8 +313,7 @@ int embedded_sdk_main(int argc,char **argv) {
      * external shell cannot consume them; clear them there, after execve,
      * so APE grandchildren use the shell's actual redirected Win32 handles. */
     args[n++]="-c";
-    args[n++]="unset _COSMO_FDS_V2 _COSMO_PID _COSMO_PPID _COSMO_STOP_CHURN "
-              "_COSMO_STOP_EVENT _SIGS _MASK _IGNS; . \"$0\"";
+    args[n++]=WINDOWS_SHELL_RESET ". \"$0\"";
   }
   args[n++]=compiler;
   if(is_cpp) {
@@ -282,7 +323,7 @@ int embedded_sdk_main(int argc,char **argv) {
   for(int i=2;i<argc;i++) args[n++]=argv[i];
   if(is_cpp && !compile_only) args[n++]="-lstdc++";
   args[n]=NULL;
-  rc=run_shell(args);
+  rc=run_external(args);
   free(args);
   return rc;
 }

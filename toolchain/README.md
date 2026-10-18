@@ -30,10 +30,14 @@ Run `python3 toolchain/bootstrap.py pins` to inspect the resolved pins.
 in isolated temporary storage. `bootstrap.py machin SOURCE BINARY` fetches the
 exact commit and checks the Go version before building. Both require new output
 paths; neither overwrites nor silently trusts an existing installation.
-`bootstrap.py stage-rust SYSROOT DESTINATION` checks the distribution date and
-stages rustc, Cargo, libraries, the distribution manifest, Cargo license files,
-and Rust compiler/library copyright notices. Missing required notices fail
-before publication. These helpers require Python 3.11+.
+`bootstrap.py rust DESTINATION` installs the pinned Linux x86-64/ARM64, macOS
+x86-64/ARM64, and Windows x86-64 Rust/Cargo distributions into private rustup
+storage, then stages one multi-host SDK. It never changes the user's default
+toolchain or executes foreign-host compilers during staging. Distribution dates
+and binary host headers are checked, and all required notices are preserved.
+`bootstrap.py stage-rust SYSROOT DESTINATION` can stage an existing single-host
+sysroot, provided it contains both GNU/Linux ELF target standard libraries.
+These helpers require Python 3.11+; installation also requires rustup.
 
 SDK packaging adds `toolchain-metadata/BUILD.json` to the native ZIP and writes
 external `BUILD.json` and `SHA256SUMS` beside `toolchain-with-sdk.com`. The embedded
@@ -41,12 +45,13 @@ record identifies the source commit/worktree state, requested pins, actual input
 tree fingerprints, bootstrap checks, and Rust/Machin notice hashes. The sidecar
 also records the final executable's size and SHA256, after verifying the packaged
 notices. Machin's license accompanies its linked compiler; Rust notices retain
-their `rust-toolchain/share/doc/` paths.
+their `rust-toolchain/hosts/<host>/share/doc/` paths.
 
 Bootstrap stamps are local build records, **not signed attestations**. Packaging
 rejects a stamped tree or Machin compiler that changed after bootstrap. Unstamped
 user-provided inputs remain supported but are explicitly `unverified-local-input`;
-requested pins do not certify them. Rust staging checks the distribution date,
+requested pins do not certify them. Rust staging checks distribution dates and
+native binary host formats,
 not a fresh cryptographic validation of every installed component. Tree hashes
 cover input names, modes, contents, and symlink targets without following links,
 excluding only root `.git` and `.toolchain-bootstrap.json`. They describe inputs
@@ -207,15 +212,15 @@ same artifact onto a fresh runner, moves the root, and cross-builds standard-
 library programs with no original SDK directory present. This is separate
 from `rust build`'s current `no_std` interface and does not change `rust cargo`
 into an implicit Cosmopolitan standard-library build command. The Rust compiler
-itself remains a Linux-host binary; third-party tools retain their own path and
-platform restrictions. Registry dependencies for a fresh std build are not yet
-bundled for offline use.
+used by this relocation job is the Linux x86-64 member of the multi-host bundle;
+third-party tools retain their own path and platform restrictions. Registry
+dependencies for a fresh std build are not yet bundled for offline use.
 
 ## Rust-generated program portability
 
 The current priority is portable **program output**, using the existing pinned
-`starccy/rust-ape` SDK. This does not turn the packaged `rustc` and Cargo host
-executables into Windows/macOS compiler implementations.
+`starccy/rust-ape` SDK. This does not turn native `rustc` or Cargo executables into
+APE binaries; native compiler-host payloads are handled separately below.
 
 The Linux-hosted job builds both `x86_64-unknown-linux-musl` and
 `aarch64-unknown-linux-musl` with the patched standard library. It reuses the
@@ -282,18 +287,34 @@ processes do not overwrite earlier diagnostics through incompatible log-file
 offset handling. Both streams are drained concurrently; extraction-count checks
 remain enabled rather than hiding missing log records.
 
-The current shared artifact embeds a **Linux x86-64 Rust compiler/Cargo sysroot**.
-`rust status` reports the packaged compiler's platform. Rust commands inspect the
-compiler header and reject incompatible OS/CPU combinations before extracting
-the SDK. They do not fall back to a host compiler or try to interpret an ELF as
-a shell script. A different OS's native Rust toolchain is not added by this check.
+The multi-host Rust payload keeps native compiler binaries, dynamic libraries,
+host tools, installer metadata, and notices under `rust-toolchain/hosts/<host>`.
+Identical target standard-library files are stored once under
+`rust-toolchain/targets/<target>/lib`; each host sysroot has relative directory
+aliases to them. Conflicting duplicate files fail staging rather than being
+silently replaced. Windows DLLs remain beside their original executables.
+The ZIP stores shared targets before aliases, and extraction selects only the
+current host's compiler tree plus shared target data. Relocation preserves those
+aliases. `hosts.json` describes the full packaged inventory.
 
-CI runs the Rust commands on every host. Outside Linux x86-64 it requires the
-specific unsupported-host rejection and no SDK materialization or owned temporary
-leaks. These records retain `passed: false`, `supported: false`, and a separate
-`rejection_validated` field; a green host-contract job must not be reported as a
-successful Rust build there. Other errors remain failures. Launcher records,
-compiler records, and generated-program records remain distinct.
+`rust status` reports the selected compiler host. The dispatcher validates ELF,
+Mach-O, or PE headers before extraction, uses the selected sysroot, and directs
+Cargo's `RUSTC`/`RUSTDOC` to packaged tools. Windows ARM uses the x64 Windows
+payload under emulation, matching the current APE PE member. Missing or mislabeled
+payloads fail explicitly; there is no host-installed Rust fallback. These are
+native compiler distributions packaged together, not a port of rustc to APE.
+
+`rust build` explicitly emits x86-64 and ARM64 GNU/Linux ELF objects on every
+compiler host before Cosmopolitan links them. It no longer assumes the compiler
+host is also the desired object target. The separate Cargo probe checks a std-
+using library offline with a fresh Cargo home and requires actual metadata output.
+It does not claim that ordinary `rust cargo build` implicitly creates an APE.
+
+CI now requires real Rust builds and Cargo checks on every runner; the former
+unsupported-host rejection is no longer accepted as a successful host contract.
+Launcher, compiler, Cargo, and generated-program records remain distinct. Native
+archive attachment still has a 2 GiB limit and fails before publication if exceeded;
+the shared library layout avoids duplicating the same target payload per host.
 
 ## Next stages
 

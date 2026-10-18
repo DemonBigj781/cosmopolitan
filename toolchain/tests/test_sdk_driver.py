@@ -5,10 +5,13 @@ from pathlib import Path
 import platform
 import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "toolchain"))
+from rust_fixtures import binary_fixture
 HARNESS = r'''
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,6 +46,10 @@ static int fixture_execvp(const char *file,char *const args[]) {
   if(getenv("TEST_REAL_SHELL"))return execv("/bin/sh",args);
   dprintf(1,"exec=%s\n",file);
   for(int i=0;args[i];i++)dprintf(1,"arg=%s\n",args[i]);
+  for(int i=0;args[i];i++)if(strstr(args[i],"/cargo")) {
+    if(getenv("RUSTC"))dprintf(1,"rustc=%s\n",getenv("RUSTC"));
+    if(getenv("RUSTDOC"))dprintf(1,"rustdoc=%s\n",getenv("RUSTDOC"));
+  }
   _exit(0);
 }
 #define fopen fixture_fopen
@@ -50,8 +57,24 @@ static int fixture_execvp(const char *file,char *const args[]) {
 #define execvp fixture_execvp
 #include "toolchain/embedded-sdk-driver.c"
 #undef fopen
-int extract_sdk_zip(const char *archive,const char *root,enum SdkComponent component) {
+int extract_sdk_zip(const char *archive,const char *root,enum SdkComponent component,const char *host) {
   char path[4096];
+  if(component==SDK_RUST) {
+    const char *pieces[]={"rust-toolchain","hosts",host,"bin"};
+    snprintf(path,sizeof(path),"%s",root);
+    for(int i=0;i<4;i++){strcat(path,"/");strcat(path,pieces[i]);if(mkdir(path,0700))return -1;}
+    for(int i=0;i<2;i++) {
+      char source[4096],target[4096];
+      const char *name=i?"cargo":"rustc",*suffix=IsWindows()?".exe":"";
+      snprintf(source,sizeof(source),"%s/rust-toolchain/hosts/%s/bin/%s%s",getenv("TEST_RESOURCES"),host,name,suffix);
+      snprintf(target,sizeof(target),"%s/%s%s",path,name,suffix);
+      FILE *in=fopen(source,"rb"),*out=fopen(target,"wb");if(!in||!out)return -1;
+      char buffer[512];size_t size;
+      while((size=fread(buffer,1,sizeof(buffer),in)))fwrite(buffer,1,size,out);
+      fclose(in);fclose(out);if(chmod(target,0700))return -1;
+    }
+    return 0;
+  }
   snprintf(path,sizeof(path),"%s/bin",root);if(mkdir(path,0700))return -1;
   snprintf(path,sizeof(path),"%s/bin/cosmocc",root);
   FILE *file=fopen(path,"w");if(!file)return -1;
@@ -90,14 +113,19 @@ class SdkDriverTest(unittest.TestCase):
         (self.root / "rust-ape").mkdir()
         (self.root / "rust-ape/run.sh").write_text("source")
         (self.root / "rust-ape/EMBEDDED.txt").write_text("Rust-APE source snapshot;")
-        (self.root / "rust-toolchain/bin").mkdir(parents=True)
-        header = bytearray(20)
-        header[:6] = b"\x7fELF\x02\x01"
         self.native_machine = 183 if platform.machine() in ("aarch64", "arm64") else 62
-        header[18] = self.native_machine
-        self.rustc = self.root / "rust-toolchain/bin/rustc"
-        self.rustc.write_bytes(header)
-        self.rustc.chmod(0o755)
+        self.host = ("aarch64" if self.native_machine == 183 else "x86_64") + "-unknown-linux-gnu"
+        self.rustc = self.add_host(self.host)
+
+    def add_host(self, host):
+        directory = self.root / "rust-toolchain/hosts" / host / "bin"
+        directory.mkdir(parents=True)
+        suffix = ".exe" if "windows" in host else ""
+        for name in ("rustc", "cargo"):
+            path = directory / (name + suffix)
+            path.write_bytes(binary_fixture(host))
+            path.chmod(0o755)
+        return directory / ("rustc" + suffix)
 
     def run_driver(self, *args, system="Linux", extra_env=None):
         return subprocess.run([str(self.executable), *args], text=True, capture_output=True,
@@ -156,12 +184,12 @@ class SdkDriverTest(unittest.TestCase):
         self.assertEqual(result.stdout, "A" * (4096 * 128))
         self.assertEqual(result.stderr.split("\n", 1)[1], "B" * (4096 * 128))
 
-    def test_unsupported_rust_host_fails_before_sdk_extraction(self):
+    def test_missing_host_payload_fails_before_sdk_extraction(self):
         for system in ("Windows", "Darwin"):
             with self.subTest(system=system):
                 result = self.run_driver("rust", "rustc", "--version", system=system)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("Unsupported packaged Rust host:", result.stderr)
+                self.assertIn("Rust compiler not packaged for", result.stderr)
                 self.assertNotIn("SDK materialized", result.stderr)
                 self.assertNotIn("exec=", result.stdout)
 
@@ -170,14 +198,39 @@ class SdkDriverTest(unittest.TestCase):
         header[18] = 62 if self.native_machine == 183 else 183
         self.rustc.write_bytes(header)
         result = self.run_driver("rust", "rustc", "--version")
-        self.assertIn("Unsupported packaged Rust host:", result.stderr)
+        self.assertIn("Packaged Rust compiler does not match", result.stderr)
         self.assertNotIn("SDK materialized", result.stderr)
 
     def test_status_identifies_packaged_compiler_platform(self):
         result = self.run_driver("rust", "status")
         self.assertEqual(result.returncode, 0, result.stderr)
-        name = "ARM64" if self.native_machine == 183 else "x86-64"
-        self.assertIn("Rust compiler platform: Linux " + name, result.stdout)
+        self.assertIn("Rust compiler platform: " + self.host, result.stdout)
+
+    def test_native_rust_uses_its_host_sysroot(self):
+        result = self.run_driver("rust", "rustc", "--version")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("/hosts/" + self.host + "/bin/rustc", result.stdout)
+        self.assertIn("arg=--sysroot", result.stdout)
+
+    def test_macos_rust_payload_is_selected_for_current_process_architecture(self):
+        host = ("aarch64" if self.native_machine == 183 else "x86_64") + "-apple-darwin"
+        self.add_host(host)
+        result = self.run_driver("rust", "rustc", "--version", system="Darwin")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("/hosts/" + host + "/bin/rustc", result.stdout)
+
+    def test_windows_rust_and_cargo_use_exe_files_and_clear_handoff_before_native_exec(self):
+        host = "x86_64-pc-windows-msvc"
+        self.add_host(host)
+        for command in ("rustc", "cargo"):
+            result = self.run_driver("rust", command, "--version", system="Windows")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("/hosts/" + host + "/bin/" + command + ".exe", result.stdout)
+            self.assertIn('exec "$0" "$@"', result.stdout)
+            if command == "cargo":
+                self.assertIn("rustc=", result.stdout)
+                self.assertIn("/bin/rustc.exe", result.stdout)
+                self.assertIn("/bin/rustdoc.exe", result.stdout)
 
 
 if __name__ == "__main__":

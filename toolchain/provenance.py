@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import zipfile
 
-from bootstrap import RUST_NOTICES, load_pins
+from bootstrap import RUST_NOTICES, load_pins, rust_hosts
 from file_metadata import STAMP, sha256, tree_sha256
 
 RESOURCE = "toolchain-metadata/BUILD.json"
@@ -35,8 +35,12 @@ def package_metadata(repo, cosmocc, rust_compiler=None, rust_source=None, rust_s
         if path is not None:
             inputs[key] = describe_tree(path)
     if rust_compiler:
-        for name in RUST_NOTICES:
-            notices["rust-toolchain/" + name] = sha256(rust_compiler / name)
+        hosts = rust_hosts(rust_compiler)
+        inputs["rust_compiler"]["hosts"] = hosts
+        for host in hosts:
+            for name in RUST_NOTICES:
+                relative = "hosts/" + host + "/" + name
+                notices["rust-toolchain/" + relative] = sha256(rust_compiler / relative)
     if machin_source:
         license_path = machin_source / "LICENSE"
         archive_name = "toolchain-metadata/licenses/machin/LICENSE"

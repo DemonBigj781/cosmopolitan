@@ -16,9 +16,13 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "toolchain/package-compiler-sdk.sh"
 sys.path.insert(0, str(ROOT / "toolchain"))
-from bootstrap import RUST_NOTICES
+from bootstrap import RUST_NOTICES, RUST_HOSTS, stage_rust, load_pins
 from file_metadata import sha256
 from provenance import record_artifact
+from rust_fixtures import make_sysroot, binary_fixture
+
+HOST = RUST_HOSTS[0]
+RUST_PREFIX = "rust-toolchain/hosts/" + HOST
 
 
 class SdkPackagingTest(unittest.TestCase):
@@ -54,11 +58,9 @@ class SdkPackagingTest(unittest.TestCase):
         old = self.write(self.cosmocc, "lib/libc.a", "library")
         os.utime(old, (0, 0))
         self.write(self.source, "run.sh", "source snapshot", executable=True)
-        self.write(self.compiler, "bin/rustc", "rust compiler", executable=True)
-        self.write(self.compiler, "bin/cargo", "cargo", executable=True)
-        self.write(self.compiler, "lib/librustc_driver.so", "compiler library")
-        for name in RUST_NOTICES:
-            self.write(self.compiler, name, "notice " + name)
+        sources = {host: make_sysroot(self.workdir / "sources", host) for host in RUST_HOSTS}
+        stage_rust(sources, self.compiler, load_pins(ROOT))
+        (self.compiler / ".toolchain-bootstrap.json").unlink()
         self.write(self.sdk, "generated/x86_64-unknown-linux-musl.json", "{}")
         for arch in ("x86_64", "aarch64"):
             name = f"{arch}-unknown-linux-musl.json"
@@ -123,8 +125,8 @@ class SdkPackagingTest(unittest.TestCase):
     def test_preserves_required_resources_and_metadata(self):
         with self.package() as archive:
             for name in ("bin/cosmocc", "include/stdio.h", "lib/libc.a",
-                         "rust-toolchain/bin/rustc", "rust-toolchain/bin/cargo",
-                         "rust-toolchain/lib/librustc_driver.so", "rust-ape/run.sh",
+                         RUST_PREFIX + "/bin/rustc", RUST_PREFIX + "/bin/cargo",
+                         RUST_PREFIX + "/lib/librustc_driver.so", "rust-ape/run.sh",
                          "rust-ape/EMBEDDED.txt", "rust-ape-sdk/LICENSE",
                          "rust-ape-sdk/generated/x86_64-unknown-linux-musl.json",
                          "rust-ape-sdk/vendor/cosmocc/bin/apelink",
@@ -154,13 +156,13 @@ class SdkPackagingTest(unittest.TestCase):
         with self.package():
             pass
         with zipfile.ZipFile(self.archive, "a") as archive:
-            info = zipfile.ZipInfo("rust-toolchain/bin/foreign-compiler")
+            info = zipfile.ZipInfo(RUST_PREFIX + "/bin/foreign-compiler")
             info.create_system = 3
             info.external_attr = (stat.S_IFLNK | 0o777) << 16
-            archive.writestr(info, "../../bin/cosmocc")
+            archive.writestr(info, "../../../../bin/cosmocc")
         destination = self.workdir / "cross-component"
         destination.mkdir()
-        result = subprocess.run([str(self.extractor), str(self.archive), str(destination), "rust"],
+        result = subprocess.run([str(self.extractor), str(self.archive), str(destination), "rust", HOST],
                                 capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("symlink rejected", result.stderr)
@@ -219,16 +221,17 @@ class SdkPackagingTest(unittest.TestCase):
 
     def test_notices_and_honest_provenance_are_packaged(self):
         with self.package() as archive:
-            for name in RUST_NOTICES:
-                self.assertEqual(archive.read("rust-toolchain/" + name).decode(), "notice " + name)
+            for host in RUST_HOSTS:
+                for name in RUST_NOTICES:
+                    self.assertEqual(archive.read("rust-toolchain/hosts/" + host + "/" + name).decode(), "notice " + name)
             record = json.loads(archive.read("toolchain-metadata/BUILD.json"))
             self.assertEqual(record["inputs"]["cosmocc"]["verification"], "unverified-local-input")
             self.assertEqual(record["inputs"]["rust_compiler"]["verification"], "unverified-local-input")
-            self.assertEqual(len(record["notices"]), len(RUST_NOTICES))
+            self.assertEqual(len(record["notices"]), len(RUST_NOTICES) * len(RUST_HOSTS))
             self.assertNotIn(str(self.workdir), json.dumps(record))
 
     def test_missing_compiler_notice_fails_before_packaging(self):
-        (self.compiler / RUST_NOTICES[0]).unlink()
+        (self.compiler / "hosts" / HOST / RUST_NOTICES[0]).unlink()
         result = self.run_packager()
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.archive.exists())
@@ -248,7 +251,7 @@ class SdkPackagingTest(unittest.TestCase):
             entries = [(info, archive.read(info)) for info in archive.infolist()]
         with zipfile.ZipFile(self.archive, "w") as archive:
             for info, data in entries:
-                archive.writestr(info, b"changed" if info.filename == "rust-toolchain/" + RUST_NOTICES[0] else data)
+                archive.writestr(info, b"changed" if info.filename == RUST_PREFIX + "/" + RUST_NOTICES[0] else data)
         with self.assertRaisesRegex(ValueError, "notice differs"):
             record_artifact(self.archive)
         self.assertFalse((self.archive.parent / "BUILD.json").exists())
@@ -281,10 +284,10 @@ class SdkPackagingTest(unittest.TestCase):
             pass
         destination = self.workdir / "rust-only"
         destination.mkdir()
-        result = subprocess.run([str(self.extractor), str(self.archive), str(destination), "rust"],
+        result = subprocess.run([str(self.extractor), str(self.archive), str(destination), "rust", HOST],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((destination / "rust-toolchain/bin/rustc").read_text(), "rust compiler")
+        self.assertEqual((destination / RUST_PREFIX / "bin/rustc").read_bytes(), binary_fixture(HOST))
         for name in ("bin", "include", "rust-ape", "rust-ape-sdk"):
             self.assertFalse((destination / name).exists(), name)
 
@@ -294,12 +297,33 @@ class SdkPackagingTest(unittest.TestCase):
         destination = self.workdir / "combined"
         destination.mkdir()
         for component in ("rust", "c"):
-            result = subprocess.run([str(self.extractor), str(self.archive), str(destination), component],
+            result = subprocess.run([str(self.extractor), str(self.archive), str(destination), component] +
+                                    ([HOST] if component == "rust" else []),
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((destination / "bin/cosmocc").is_file())
-        self.assertTrue((destination / "rust-toolchain/bin/rustc").is_file())
+        self.assertTrue((destination / RUST_PREFIX / "bin/rustc").is_file())
         self.assertFalse((destination / "rust-ape-sdk").exists())
+
+    def test_rust_extraction_selects_one_host_and_keeps_shared_target_aliases(self):
+        with self.package() as archive:
+            names = archive.namelist()
+            target = "rust-toolchain/targets/" + HOST + "/lib/libcore.rlib"
+            alias = RUST_PREFIX + "/lib/rustlib/" + HOST + "/lib"
+            self.assertLess(names.index(target), names.index(alias))
+            self.assertTrue(archive.read(alias).endswith(b"/"))
+        for host in RUST_HOSTS:
+            with self.subTest(host=host):
+                destination = self.workdir / host
+                destination.mkdir()
+                result = subprocess.run([str(self.extractor), str(self.archive), str(destination), "rust", host],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                root = destination / "rust-toolchain"
+                self.assertEqual([p.name for p in (root / "hosts").iterdir()], [host])
+                alias = root / "hosts" / host / "lib/rustlib" / HOST / "lib"
+                self.assertTrue(alias.is_symlink())
+                self.assertEqual((alias / "libcore.rlib").read_text(), "shared target " + HOST)
 
     def test_patched_sdk_export_preserves_only_its_namespace(self):
         with self.package():

@@ -10,9 +10,10 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "toolchain"))
-from bootstrap import RUST_NOTICES, bootstrap_machin, bootstrap_sdk, load_pins, stage_rust
+from bootstrap import RUST_NOTICES, RUST_HOSTS, ELF_TARGETS, bootstrap_machin, bootstrap_sdk, bootstrap_rust, load_pins, stage_rust, rust_hosts
 from provenance import describe_tree
 from file_metadata import tree_sha256
+from rust_fixtures import make_sysroot
 
 
 class BootstrapTest(unittest.TestCase):
@@ -133,26 +134,15 @@ class BootstrapTest(unittest.TestCase):
                 bootstrap_machin(self.root / "machin", self.root / "compiler", load_pins(self.root))
         run.assert_not_called()
 
-    def rust_sysroot(self):
-        source = self.root / "rust-source"
-        (source / "bin").mkdir(parents=True)
-        (source / "lib/rustlib").mkdir(parents=True)
-        for name in ("rustc", "cargo"):
-            (source / "bin" / name).write_text("compiler fixture")
-        (source / "lib/rustlib/multirust-channel-manifest.toml").write_text('date = "2026-07-28"\n')
-        for name in RUST_NOTICES:
-            path = source / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("notice " + name)
-        return source
+    def rust_sysroot(self, host="x86_64-unknown-linux-gnu"):
+        return make_sysroot(self.root, host)
 
     def test_rust_staging_preserves_all_required_notices(self):
         source = self.rust_sysroot()
         destination = self.root / "rust-staged"
-        with patch("bootstrap.capture", return_value="pinned compiler version"):
-            stage_rust(source, destination, load_pins(self.root))
+        stage_rust({RUST_HOSTS[0]: source}, destination, load_pins(self.root))
         for name in RUST_NOTICES:
-            self.assertEqual((destination / name).read_bytes(), (source / name).read_bytes())
+            self.assertEqual((destination / "hosts" / RUST_HOSTS[0] / name).read_bytes(), (source / name).read_bytes())
         stamp = json.loads((destination / ".toolchain-bootstrap.json").read_text())
         self.assertEqual(stamp["tree_sha256"], tree_sha256(destination))
 
@@ -161,14 +151,14 @@ class BootstrapTest(unittest.TestCase):
         (source / RUST_NOTICES[0]).unlink()
         destination = self.root / "rust-staged"
         with self.assertRaises(FileNotFoundError):
-            stage_rust(source, destination, load_pins(self.root))
+            stage_rust({RUST_HOSTS[0]: source}, destination, load_pins(self.root))
         self.assertFalse(destination.exists())
 
     def test_wrong_rust_distribution_date_is_rejected(self):
         source = self.rust_sysroot()
         (source / "lib/rustlib/multirust-channel-manifest.toml").write_text('date = "2026-07-29"\n')
         with self.assertRaises(ValueError):
-            stage_rust(source, self.root / "rust-staged", load_pins(self.root))
+            stage_rust({RUST_HOSTS[0]: source}, self.root / "rust-staged", load_pins(self.root))
 
     def test_rust_staging_refuses_existing_destination(self):
         source = self.rust_sysroot()
@@ -176,8 +166,59 @@ class BootstrapTest(unittest.TestCase):
         destination.mkdir()
         (destination / "valuable").write_text("keep")
         with self.assertRaises(FileExistsError):
-            stage_rust(source, destination, load_pins(self.root))
+            stage_rust({RUST_HOSTS[0]: source}, destination, load_pins(self.root))
         self.assertEqual((destination / "valuable").read_text(), "keep")
+
+    def test_multiple_hosts_share_identical_target_libraries_without_losing_dlls(self):
+        sources = {host: self.rust_sysroot(host) for host in RUST_HOSTS}
+        destination = self.root / "multi-host"
+        with patch("bootstrap.capture") as capture:
+            stage_rust(sources, destination, load_pins(self.root))
+        capture.assert_not_called()  # Foreign-host compilers must not be executed.
+        for host in RUST_HOSTS:
+            for target in set((*ELF_TARGETS, host)):
+                alias = destination / "hosts" / host / "lib/rustlib" / target / "lib"
+                self.assertTrue(alias.is_symlink())
+                self.assertEqual(alias.resolve(), destination / "targets" / target / "lib")
+                self.assertEqual((alias / "libcore.rlib").read_text(), "shared target " + target)
+        windows = destination / "hosts/x86_64-pc-windows-msvc/bin"
+        self.assertTrue((windows / "rustc.exe").is_file())
+        self.assertEqual((windows / "rustc_driver-fixture.dll").read_bytes(), b"native DLL")
+        self.assertEqual(json.loads((destination / "hosts.json").read_text())["hosts"], list(RUST_HOSTS))
+
+    def test_conflicting_target_libraries_fail_instead_of_overwriting(self):
+        first, second = RUST_HOSTS[:2]
+        sources = {host: self.rust_sysroot(host) for host in (first, second)}
+        (sources[second] / "lib/rustlib" / ELF_TARGETS[0] / "lib/libcore.rlib").write_text("different")
+        destination = self.root / "conflict"
+        with self.assertRaisesRegex(ValueError, "conflicting"):
+            stage_rust(sources, destination, load_pins(self.root))
+        self.assertFalse(destination.exists())
+
+    def test_mislabeled_native_compiler_is_rejected(self):
+        source = self.rust_sysroot()
+        with self.assertRaisesRegex(ValueError, "compiler host"):
+            stage_rust({"aarch64-unknown-linux-gnu": source}, self.root / "wrong-host", load_pins(self.root))
+
+    def test_rust_bootstrap_installs_exact_foreign_hosts_in_private_storage(self):
+        pins = load_pins(self.root)
+        destination = self.root / "downloaded-rust"
+        def install(command, **kwargs):
+            self.assertEqual(command[:3], ["/usr/bin/rustup", "toolchain", "install"])
+            self.assertIn("--force-non-host", command)
+            self.assertIn("--no-self-update", command)
+            host = command[3].removeprefix(pins["rust_nightly"] + "-")
+            self.assertIn(host, RUST_HOSTS)
+            home = Path(kwargs["env"]["RUSTUP_HOME"])
+            self.assertTrue(home.is_relative_to(self.root))
+            source = make_sysroot(home / "toolchains", host)
+            source.rename(home / "toolchains" / command[3])
+            return subprocess.CompletedProcess(command, 0)
+        with patch("bootstrap.shutil.which", return_value="/usr/bin/rustup"), \
+             patch("bootstrap.subprocess.run", side_effect=install) as run:
+            bootstrap_rust(destination, pins)
+        self.assertEqual(run.call_count, len(RUST_HOSTS))
+        self.assertEqual(rust_hosts(destination), list(RUST_HOSTS))
 
 
 class FileMetadataTest(unittest.TestCase):

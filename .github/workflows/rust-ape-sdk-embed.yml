@@ -32,8 +32,8 @@ jobs:
       - name: Verify pinned Cargo resolves relocated configuration paths
         run: |
           python3 toolchain/tests/check_cargo_config_paths.py \
-            --cargo /tmp/rust-embedded/bin/cargo \
-            --rustc /tmp/rust-embedded/bin/rustc
+            --cargo /tmp/rust-embedded/hosts/x86_64-unknown-linux-gnu/bin/cargo \
+            --rustc /tmp/rust-embedded/hosts/x86_64-unknown-linux-gnu/bin/rustc
       - name: Prepare patched Rust-APE SDK
         shell: bash
         run: |
@@ -65,8 +65,10 @@ jobs:
               required={
                   'rust-ape-sdk/generated/x86_64-unknown-linux-musl.json',
                   'rust-ape-sdk/vendor/cosmocc/bin/apelink',
-                  'rust-toolchain/bin/rustc',
-                  'rust-toolchain/bin/cargo',
+                  'rust-toolchain/hosts/x86_64-unknown-linux-gnu/bin/rustc',
+                  'rust-toolchain/hosts/x86_64-unknown-linux-gnu/bin/cargo',
+                  'rust-toolchain/hosts/x86_64-pc-windows-msvc/bin/rustc.exe',
+                  'rust-toolchain/hosts/aarch64-apple-darwin/bin/rustc',
                   'rust-ape/run.sh',
               }
               missing=required-names
@@ -174,7 +176,7 @@ jobs:
           sudo apt-get install -y zlib1g-dev
           cc -O2 -I. toolchain/tests/extract_sdk_test.c -lz -o "$RUNNER_TEMP/sdk-extractor"
           mkdir "$RUNNER_TEMP/sdk-export"
-          "$RUNNER_TEMP/sdk-extractor" artifact/toolchain-with-sdk.com "$RUNNER_TEMP/sdk-export" rust
+          "$RUNNER_TEMP/sdk-extractor" artifact/toolchain-with-sdk.com "$RUNNER_TEMP/sdk-export" rust x86_64-unknown-linux-gnu
           "$RUNNER_TEMP/sdk-extractor" artifact/toolchain-with-sdk.com "$RUNNER_TEMP/sdk-export" ape
           mv "$RUNNER_TEMP/sdk-export" "$RUNNER_TEMP/relocated-sdk"
           test ! -e "$GITHUB_WORKSPACE/o/rust-ape/sdk"
@@ -183,7 +185,7 @@ jobs:
         run: |
           set -euo pipefail
           SDK="$RUNNER_TEMP/relocated-sdk/rust-ape-sdk"
-          RUST="$RUNNER_TEMP/relocated-sdk/rust-toolchain"
+          RUST="$RUNNER_TEMP/relocated-sdk/rust-toolchain/hosts/x86_64-unknown-linux-gnu"
           export PATH="$RUST/bin:$PATH"
           export RUSTC="$RUST/bin/rustc"
           export CARGO_HOME="$RUNNER_TEMP/relocated-cargo-home"
@@ -344,6 +346,7 @@ jobs:
             o/compiler-host/*.log
             o/compiler-host/*/*.log
             o/compiler-host/*/hello.com
+            o/compiler-host/cargo-check/target/debug/deps/*.rmeta
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

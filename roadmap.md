@@ -222,8 +222,8 @@ on every host. No Xavier access or system changes occurred. Recovery tag:
   Source-template rendering and the fresh-runner relocated std build passed.
   The std-source environment must be supplied to Cargo itself at invocation.
 - [ ] Audit shell utilities, dynamic libraries, loaders, compiler subprocesses,
-  and build-time versus runtime dependencies. Packaged `rustc` and Cargo are
-  currently Linux ELF binaries, not portable APE compiler implementations.
+  and build-time versus runtime dependencies. Native Rust/Cargo distributions
+  retain OS/CPU dependencies; bundling them does not make them APE compilers.
 - [x] Pin toolchain bootstrap inputs and record artifact checksums/licenses.
   Shared bootstrap, notice preservation, provenance, and hosted regressions
   passed; this does not pin the complete runner environment.
@@ -246,7 +246,8 @@ completion. Eliminating the remaining necessary materialization is separate work
 - [x] Run the same artifact's C/C++/Machin compiler smoke builds on hosted Linux,
   macOS, and Windows. Windows ARM64 execution uses x64 emulation.
 - [ ] Make the packaged Rust compiler/Cargo usable outside Linux x86-64.
-  Current incompatible-host checks are explicit rejections, not a Rust port.
+  Multi-host staging, shared targets, host selection, and genuine Rust/Cargo
+  checks are implemented; hosted verification is pending. This is not a Rust port.
 - [x] Produce macOS-targeted APE build outputs. The earlier compile-only scope
   is retained in historical checkpoints; hosted runtime tests are now authorized.
 - [x] Run the same six generated programs on hosted Linux x86-64/ARM64,

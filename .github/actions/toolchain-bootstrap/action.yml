@@ -24,15 +24,9 @@ runs:
       run: |
         python3 toolchain/bootstrap.py sdk /tmp/cosmocc
         python3 toolchain/bootstrap.py machin /tmp/machin /tmp/machin-compiler
-    - name: Stage Rust compiler and distribution notices
+    - name: Stage pinned native Rust hosts and shared target libraries
       if: inputs.rust-compiler == 'true'
       shell: bash
-      env:
-        RUST_NIGHTLY: ${{ steps.pins.outputs.rust_nightly }}
       run: |
-        rustup toolchain install "$RUST_NIGHTLY" --profile minimal
-        rustup target add aarch64-unknown-linux-gnu --toolchain "$RUST_NIGHTLY"
-        RUSTC="$(rustup which --toolchain "$RUST_NIGHTLY" rustc)"
-        SYSROOT="$(dirname "$(dirname "$RUSTC")")"
-        python3 toolchain/bootstrap.py stage-rust "$SYSROOT" /tmp/rust-embedded
-        /tmp/rust-embedded/bin/rustc --version
+        python3 toolchain/bootstrap.py rust /tmp/rust-embedded
+        /tmp/rust-embedded/hosts/x86_64-unknown-linux-gnu/bin/rustc --version

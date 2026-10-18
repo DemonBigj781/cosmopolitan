@@ -10,13 +10,41 @@ import sys
 
 from program_matrix import host_platform, prepare_loader, validate_bundle, windows_machine
 from file_metadata import sha256
-from smoke_compilers import PROBES, ROOT, probe
+from smoke_compilers import PROBES, ROOT, SAMPLES, OWNED_TEMP_PREFIXES, probe
 
 
-def expected_rust_rejection(exit_code, text):
-    return (exit_code != 0 and
-            "Unsupported packaged Rust host: requires Linux x86-64; no SDK extracted" in text and
-            "SDK materialized:" not in text)
+def check_cargo_project(toolchain, output, loader):
+    project = output / "cargo-check"
+    shutil.copytree(SAMPLES / "cargo-host", project,
+                    ignore=shutil.ignore_patterns("target", "__pycache__"))
+    temporary = project / "temporary"
+    temporary.mkdir()
+    target = project / "target"
+    environment = dict(os.environ, TMPDIR=str(temporary), TMP=str(temporary), TEMP=str(temporary),
+                       CARGO_HOME=str(project / "cargo-home"))
+    for variable in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"):
+        environment.pop(variable, None)
+    command = ([str(loader)] if loader else []) + [str(toolchain), "rust", "cargo", "--offline", "check",
+                "--manifest-path", str(project / "Cargo.toml"), "--target-dir", str(target)]
+    result = {"passed": False, "command": command}
+    try:
+        with (project / "check.log").open("w") as log:
+            run = subprocess.run(command, cwd=project, env=environment, stdout=log,
+                                 stderr=subprocess.STDOUT, timeout=600)
+        result["exit_code"] = run.returncode
+        metadata = list(target.glob("debug/deps/libcargo_host_probe-*.rmeta"))
+        result["metadata"] = [{"file": str(p.relative_to(project)), "sha256": sha256(p)}
+                              for p in metadata if p.stat().st_size]
+        text = (project / "check.log").read_text(errors="replace")
+        result["materialized_components"] = [line.split(" (", 1)[0].removeprefix("SDK materialized: ")
+            for line in text.splitlines() if line.startswith("SDK materialized: ")]
+        result["remaining_owned_temp_paths"] = [p.name for p in temporary.iterdir()
+                                               if p.name.startswith(OWNED_TEMP_PREFIXES)]
+        result["passed"] = (run.returncode == 0 and bool(result["metadata"]) and
+            result["materialized_components"] == ["Rust"] and not result["remaining_owned_temp_paths"])
+    except (OSError, subprocess.SubprocessError) as error:
+        result["error"] = str(error)
+    return result
 
 
 def check_host(toolchain, build_manifest, resources, output, commit, expected_os, expected_arch):
@@ -26,10 +54,6 @@ def check_host(toolchain, build_manifest, resources, output, commit, expected_os
     try:
         system, architecture = host_platform()
         result["host"] = {"os": system, "architecture": architecture}
-        # The shared CI artifact currently embeds only the Linux x86-64 sysroot.
-        # Unsupported Rust commands must fail explicitly, not masquerade as builds.
-        rust_supported = (system, architecture) == ("Linux", "x86_64")
-        result["rust_compiler_supported"] = rust_supported
         if (system, architecture) != (expected_os, expected_arch):
             raise ValueError("Unexpected compiler-test host")
         build = json.loads(build_manifest.read_text())
@@ -38,6 +62,12 @@ def check_host(toolchain, build_manifest, resources, output, commit, expected_os
         original_hash = sha256(toolchain)
         if original_hash != build["artifact"]["sha256"]:
             raise ValueError("Toolchain hash differs from build")
+        rust_host = ("x86_64-pc-windows-msvc" if system == "Windows" else
+                     architecture + ("-apple-darwin" if system == "Darwin" else "-unknown-linux-gnu"))
+        if rust_host not in build["inputs"]["rust_compiler"]["hosts"]:
+            raise ValueError("Rust payload missing for compiler-test host: " + rust_host)
+        result["rust_compiler_host"] = rust_host
+        result["rust_compiler_supported"] = True
         result["toolchain_execution"] = ("x64-emulated" if system == "Windows" and
             architecture == "aarch64" and windows_machine(toolchain) == "x86_64" else "native")
         validate_bundle(resources, commit)
@@ -63,8 +93,7 @@ def check_host(toolchain, build_manifest, resources, output, commit, expected_os
             ("cargo-version", ["rust", "cargo", "--version"], ""),
         ]
         for name, arguments, marker in checks:
-            supported = rust_supported or name not in ("rustc-version", "cargo-version")
-            record = {"name": name, "passed": False, "supported": supported}
+            record = {"name": name, "passed": False, "supported": True}
             try:
                 with (launch_dir / (name + ".stdout.log")).open("w") as stdout, \
                      (launch_dir / (name + ".stderr.log")).open("w") as stderr:
@@ -72,31 +101,24 @@ def check_host(toolchain, build_manifest, resources, output, commit, expected_os
                                          env=environment, cwd=launch_dir, timeout=180)
                 text = (launch_dir / (name + ".stdout.log")).read_text(errors="replace")
                 record.update(exit_code=run.returncode, passed=run.returncode == 0 and bool(text) and marker in text)
-                if not supported:
-                    error_text = (launch_dir / (name + ".stderr.log")).read_text(errors="replace")
-                    record["rejection_validated"] = expected_rust_rejection(run.returncode, error_text)
-                    record["passed"] = False
             except (OSError, subprocess.SubprocessError) as error:
                 record["error"] = str(error)
             result["launcher"].append(record)
-            status = "UNSUPPORTED (rejection verified)" if record.get("rejection_validated") else "PASS" if record["passed"] else "FAIL"
+            status = "PASS" if record["passed"] else "FAIL"
             print(f"{status}: launcher {name}", flush=True)
             (output / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
         for language in PROBES:
             record = probe(executable, language, output, loader)
-            record["supported"] = rust_supported or language != "rust"
-            if not record["supported"]:
-                log = (output / language / "build.log").read_text(errors="replace")
-                record["rejection_validated"] = (expected_rust_rejection(record.get("build_exit", 0), log) and
-                    record.get("materialized_components") == [] and record.get("remaining_owned_temp_paths") == [])
-                record["passed"] = False
+            record["supported"] = True
             result["compilers"].append(record)
-            status = "UNSUPPORTED (rejection verified)" if record.get("rejection_validated") else "PASS" if record["passed"] else "FAIL"
+            status = "PASS" if record["passed"] else "FAIL"
             print(f"{status}: compiler {language}", flush=True)
             (output / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
+        result["cargo"] = check_cargo_project(executable, output, loader)
+        print(f"{'PASS' if result['cargo']['passed'] else 'FAIL'}: Cargo offline native-std check", flush=True)
         result["toolchain_unchanged"] = sha256(executable) == sha256(toolchain) == original_hash
         result["passed"] = (result["toolchain_unchanged"] and
-            all(r["passed"] or r.get("rejection_validated", False) for r in result["launcher"] + result["compilers"]))
+            all(r["passed"] for r in result["launcher"] + result["compilers"]) and result["cargo"]["passed"])
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         result["error"] = str(error)
     (output / "summary.json").write_text(json.dumps(result, indent=2) + "\n")

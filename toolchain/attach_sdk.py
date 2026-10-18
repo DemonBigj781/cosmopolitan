@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import zipfile
 
+MAX_NATIVE_ARCHIVE_SIZE = 2**31 - 1  # Current zipcopy / ZIPOS ZIP32 contract.
 
 def inventory(archive):
     entries = archive.infolist()
@@ -41,6 +42,8 @@ def attach_sdk(executable, sdk_archive, output, zipcopy):
                             with resources.open(copy.copy(entry), "w") as target:
                                 shutil.copyfileobj(source, target, 1024 * 1024)
             expected = inventory(resources)
+        if executable.stat().st_size + merged.stat().st_size > MAX_NATIVE_ARCHIVE_SIZE:
+            raise ValueError("Combined APE exceeds the current 2 GiB native ZIP limit")
         shutil.copyfile(executable, staged)
         # The SDK's APE utility can bootstrap through sh without a global APE
         # handler. This is a build-time tool, never a deployed runtime dependency.

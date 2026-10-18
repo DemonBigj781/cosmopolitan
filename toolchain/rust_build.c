@@ -38,7 +38,7 @@ int rust_build_main(int argc,char **argv) {
      snprintf(wrapper,sizeof(wrapper),"%s/main.c",dir)>=(int)sizeof(wrapper) ||
      snprintf(cobj,sizeof(cobj),"%s/main.o",dir)>=(int)sizeof(cobj))goto done;
   if(mkdir(subdir,0700)) {perror("mkdir");goto done;}
-  char *xargs[]={self,"rust","rustc","--edition=2024","--crate-type=lib","--emit=obj",
+  char *xargs[]={self,"rust","rustc","--edition=2024","--target","x86_64-unknown-linux-gnu","--crate-type=lib","--emit=obj",
     "-C","panic=abort","-C","overflow-checks=off",(char*)source,"-o",x,NULL};
   rc=invoke(xargs);
   if(!rc) {
