@@ -164,6 +164,43 @@ adaptation is the next phase. No Xavier access, system changes, or cleanup took
 place during this checkpoint. The local recovery tag is
 `checkpoint/cross-os-programs-ci-f0a6de22`.
 
+### Compiler-host smoke-build checkpoint
+
+All 11 workflows passed for source commit
+`87008b7e9d51284e4e9b84c399f42f9c721bcddf`. Run `39081733475` passed all 13
+jobs while keeping compiler-host results separate from program-output tests.
+
+| Compiler host | C / C++ / Machin builds and execution | Rust compilation |
+| --- | --- | --- |
+| Linux x86-64 | Passed | Passed |
+| Linux ARM64 | Passed | Rejected as unsupported |
+| macOS Intel | Passed | Rejected as unsupported |
+| macOS ARM64 | Passed | Rejected as unsupported |
+| Windows x86-64 | Passed | Rejected as unsupported |
+| Windows ARM64 host, x64 emulation | Passed | Rejected as unsupported |
+
+Downloaded evidence independently confirmed 19 successful compiler-build/run
+probes, 15 explicit unsupported Rust-command rejections, and all 36 unchanged
+generated-program regressions. Local regression coverage passed 96 tests with
+both GCC and Clang, including real-driver shell argument/environment tests and
+simultaneous stdout/stderr relay beyond pipe capacity.
+
+Windows failures were reproduced and corrected at the native-process boundary:
+explicit `sh.exe` lookup, slash-form drive arguments, clearing stale private
+process/descriptor handoff metadata at the external shell boundary, and parent-owned
+output relaying to prevent overwritten log records. Resource-limit policy is
+preserved. The SDK script and compiler payloads are not rewritten to hide faults,
+and extraction-count checks remain enabled. Shell utilities are still external
+prerequisites; existing non-fatal SDK C++ warnings remain visible.
+
+Rust remains a Linux x86-64 host toolchain in the shared artifact. Incompatible
+hosts fail clearly before SDK extraction rather than executing foreign ELF bytes
+or claiming that the compiler is missing. Unsupported results remain explicitly
+marked unsupported, not successful compilations. This checkpoint covers successful
+smoke builds, not complete negative-input/exit-status parity or offline operation
+on every host. No Xavier access or system changes occurred. Recovery tag:
+`checkpoint/compiler-host-ci-87008b7e`.
+
 ## 2. Current milestone: self-contained existing toolchain
 
 - [x] Prove native ZIPOS reads from the real SDK without extraction, using the
@@ -206,13 +243,16 @@ completion. Eliminating the remaining necessary materialization is separate work
   compile x86-64 and ARM64 on Linux, package the requested bootstrap inputs, and
   validate the same bytes on Linux x86-64 and Windows x86-64. This is not a port
   of the Rust compiler/Cargo host executables.
-- [ ] Run the same artifact's compiler smoke tests on Linux and Windows.
+- [x] Run the same artifact's C/C++/Machin compiler smoke builds on hosted Linux,
+  macOS, and Windows. Windows ARM64 execution uses x64 emulation.
+- [ ] Make the packaged Rust compiler/Cargo usable outside Linux x86-64.
+  Current incompatible-host checks are explicit rejections, not a Rust port.
 - [x] Produce macOS-targeted APE build outputs. The earlier compile-only scope
   is retained in historical checkpoints; hosted runtime tests are now authorized.
 - [x] Run the same six generated programs on hosted Linux x86-64/ARM64,
   macOS Intel/ARM64, and Windows x86-64/ARM64 hosts. Record x64 emulation on
   Windows ARM separately; fix the test harness before compiler-host adaptations.
-- [ ] Keep launcher, compiler/runtime, and generated-program results distinct.
+- [x] Keep launcher, compiler/runtime, and generated-program results distinct.
 - [ ] Test absence of installed compilers, offline operation, negative inputs,
   and filesystem isolation on explicitly approved execution targets. Scoped
   macOS/ARM program tests are now authorized; compiler-host support is separate.
