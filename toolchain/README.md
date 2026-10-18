@@ -309,6 +309,9 @@ Cargo's `RUSTC`/`RUSTDOC` to packaged tools. Windows ARM uses the x64 Windows
 payload under emulation, matching the current APE PE member. Missing or mislabeled
 payloads fail explicitly; there is no host-installed Rust fallback. These are
 native compiler distributions packaged together, not a port of rustc to APE.
+On Windows the shell waits for native Rust/Cargo as a foreground child, rather
+than handing off its identity with `exec`, before the parent removes the SDK.
+Cleanup errors still fail the command and identify the owned path involved.
 
 `rust build` explicitly emits x86-64 and ARM64 GNU/Linux ELF objects on every
 compiler host before Cosmopolitan links them. It no longer assumes the compiler

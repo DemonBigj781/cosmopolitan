@@ -273,7 +273,9 @@ int embedded_sdk_main(int argc,char **argv) {
     if(IsWindows()) {
       rargs[n++]="sh.exe";
       rargs[n++]="-c";
-      rargs[n++]=WINDOWS_SHELL_RESET "exec \"$0\" \"$@\"";
+      /* Keep the shell as the child we wait for. MSYS exec of a native PE can
+       * hand off process identity; an explicit foreground wait owns its lifetime. */
+      rargs[n++]=WINDOWS_SHELL_RESET "\"$0\" \"$@\"; result=$?; exit \"$result\"";
     }
     rargs[n++]=is_cargo?cargo:rustc;
     if(!is_cargo) {

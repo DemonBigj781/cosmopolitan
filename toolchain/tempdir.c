@@ -28,7 +28,7 @@ int toolchain_temp_open(struct ToolchainTemp *dir, const char *prefix) {
   return 0;
 }
 
-static int remove_contents(int fd) {
+static int remove_contents(int fd, const char *path) {
   /* Use a fresh directory description, not a dup of an older directory view
    * or a descriptor whose iteration offset another operation has advanced. */
   int copy = openat(fd, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
@@ -41,17 +41,29 @@ static int remove_contents(int fd) {
     struct dirent *entry = readdir(directory);
     if (!entry) { if (errno) error = errno; break; }
     if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+    char child_path[4096];
+    if (snprintf(child_path, sizeof(child_path), "%s/%s", path, entry->d_name) >= (int)sizeof(child_path)) {
+      error = ENAMETOOLONG; break;
+    }
     struct stat st;
-    if (fstatat(fd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW)) { error = errno; break; }
+    if (fstatat(fd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW)) {
+      error = errno; fprintf(stderr, "inspect owned entry %s: %s\n", child_path, strerror(error)); break;
+    }
     if (S_ISDIR(st.st_mode)) {
       int child = openat(fd, entry->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-      if (child == -1) { error = errno; break; }
-      int rc = remove_contents(child);
+      if (child == -1) {
+        error = errno; fprintf(stderr, "open owned directory %s: %s\n", child_path, strerror(error)); break;
+      }
+      int rc = remove_contents(child, child_path);
       if (rc) error = errno;
       if (close(child) && !error) error = errno;
       if (error) break;
-      if (unlinkat(fd, entry->d_name, AT_REMOVEDIR)) { error = errno; break; }
-    } else if (unlinkat(fd, entry->d_name, 0)) { error = errno; break; }
+      if (unlinkat(fd, entry->d_name, AT_REMOVEDIR)) {
+        error = errno; fprintf(stderr, "remove owned directory %s: %s\n", child_path, strerror(error)); break;
+      }
+    } else if (unlinkat(fd, entry->d_name, 0)) {
+      error = errno; fprintf(stderr, "remove owned entry %s: %s\n", child_path, strerror(error)); break;
+    }
   }
   if (closedir(directory) && !error) error = errno;
   if (error) { errno = error; return -1; }
@@ -65,7 +77,7 @@ int toolchain_temp_close(struct ToolchainTemp *dir) {
   if (fstat(dir->fd, &owned) || lstat(dir->path, &current)) error = errno;
   else if (!S_ISDIR(current.st_mode) || owned.st_dev != current.st_dev ||
            owned.st_ino != current.st_ino) error = ESTALE;
-  if (!error && remove_contents(dir->fd)) error = errno;
+  if (!error && remove_contents(dir->fd, dir->path)) error = errno;
   if (close(dir->fd) && !error) error = errno;
   dir->fd = -1;
   if (!error) {

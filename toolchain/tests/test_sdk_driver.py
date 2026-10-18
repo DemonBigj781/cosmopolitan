@@ -226,7 +226,8 @@ class SdkDriverTest(unittest.TestCase):
             result = self.run_driver("rust", command, "--version", system="Windows")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("/hosts/" + host + "/sysroot/bin/" + command + ".exe", result.stdout)
-            self.assertIn('exec "$0" "$@"', result.stdout)
+            self.assertIn('"$0" "$@"; result=$?; exit "$result"', result.stdout)
+            self.assertNotIn('exec "$0" "$@"', result.stdout)
             if command == "cargo":
                 self.assertIn("rustc=", result.stdout)
                 self.assertIn("/bin/rustc.exe", result.stdout)
