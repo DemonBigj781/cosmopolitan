@@ -201,6 +201,40 @@ smoke builds, not complete negative-input/exit-status parity or offline operatio
 on every host. No Xavier access or system changes occurred. Recovery tag:
 `checkpoint/compiler-host-ci-87008b7e`.
 
+### Multi-host Rust/Cargo checkpoint
+
+All 11 workflows passed for source commit
+`3930697e7a1d89c5e7802683c258be84a5fd786a`. Run `39096823939` passed all 13
+jobs. The same APE now packages pinned Rust/Cargo installations for Linux
+x86-64/ARM64, macOS x86-64/ARM64, and Windows x86-64. Windows ARM64 continues
+to use the Windows x64 payload under emulation.
+
+All six hosts passed all four compiler build-and-run probes (24 total), an
+offline Cargo standard-library check with real metadata output (six total), and
+the unchanged program-output regressions (36 total). Downloaded evidence confirmed
+source identities, outputs, hashes, host selection, and absence of owned SDK
+temporary directories. Both GCC and Clang passed 112 local regression tests.
+
+Native binaries, DLLs/libraries, helper tools, and notices retain their relative
+installation layouts under `rust-toolchain/hosts/<host>/sysroot`. Identical target
+library files are shared once through validated relative directory aliases.
+The resulting APE is 1,767,873,306 bytes, below the existing 2 GiB attachment limit.
+This packages native compiler distributions together; it does not turn rustc or
+Cargo into APE implementations or remove their OS-library dependencies.
+
+Real Cargo testing exposed the pinned compiler's special handling of a sysroot
+directory named exactly like its host triple. The producer now uses a `sysroot`
+subdirectory, fixing ordinary discovery without injecting Cargo sysroot flags.
+On Windows ARM, executable files remained briefly locked after native process
+completion. Cleanup retains strict ownership checks and a shared five-second
+budget only for regular `.exe`/`.dll` release; permanent errors still fail.
+The recorded waits cleared and no temporary SDK paths remained.
+
+The Rust build probe still tests the existing `no_std`-to-APE interface. Cargo's
+probe typechecks a std-using library; arbitrary Cargo-project APE linking on every
+host is a separate capability. Xavier was not contacted or modified. Recovery tag:
+`checkpoint/multihost-rust-ci-3930697e`.
+
 ## 2. Current milestone: self-contained existing toolchain
 
 - [x] Prove native ZIPOS reads from the real SDK without extraction, using the
@@ -245,9 +279,9 @@ completion. Eliminating the remaining necessary materialization is separate work
   of the Rust compiler/Cargo host executables.
 - [x] Run the same artifact's C/C++/Machin compiler smoke builds on hosted Linux,
   macOS, and Windows. Windows ARM64 execution uses x64 emulation.
-- [ ] Make the packaged Rust compiler/Cargo usable outside Linux x86-64.
-  Multi-host staging, shared targets, host selection, and genuine Rust/Cargo
-  checks are implemented; hosted verification is pending. This is not a Rust port.
+- [x] Make the packaged Rust compiler/Cargo usable outside Linux x86-64.
+  Multi-host staging, shared targets, host selection, real Rust builds, and Cargo
+  std checks passed on all six hosted targets. This is not a rustc-to-APE port.
 - [x] Produce macOS-targeted APE build outputs. The earlier compile-only scope
   is retained in historical checkpoints; hosted runtime tests are now authorized.
 - [x] Run the same six generated programs on hosted Linux x86-64/ARM64,
