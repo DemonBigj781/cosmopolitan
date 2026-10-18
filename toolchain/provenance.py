@@ -39,7 +39,7 @@ def package_metadata(repo, cosmocc, rust_compiler=None, rust_source=None, rust_s
         inputs["rust_compiler"]["hosts"] = hosts
         for host in hosts:
             for name in RUST_NOTICES:
-                relative = "hosts/" + host + "/" + name
+                relative = "hosts/" + host + "/sysroot/" + name
                 notices["rust-toolchain/" + relative] = sha256(rust_compiler / relative)
     if machin_source:
         license_path = machin_source / "LICENSE"

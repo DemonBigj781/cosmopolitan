@@ -142,7 +142,7 @@ class BootstrapTest(unittest.TestCase):
         destination = self.root / "rust-staged"
         stage_rust({RUST_HOSTS[0]: source}, destination, load_pins(self.root))
         for name in RUST_NOTICES:
-            self.assertEqual((destination / "hosts" / RUST_HOSTS[0] / name).read_bytes(), (source / name).read_bytes())
+            self.assertEqual((destination / "hosts" / RUST_HOSTS[0] / "sysroot" / name).read_bytes(), (source / name).read_bytes())
         stamp = json.loads((destination / ".toolchain-bootstrap.json").read_text())
         self.assertEqual(stamp["tree_sha256"], tree_sha256(destination))
 
@@ -177,11 +177,14 @@ class BootstrapTest(unittest.TestCase):
         capture.assert_not_called()  # Foreign-host compilers must not be executed.
         for host in RUST_HOSTS:
             for target in set((*ELF_TARGETS, host)):
-                alias = destination / "hosts" / host / "lib/rustlib" / target / "lib"
+                alias = destination / "hosts" / host / "sysroot/lib/rustlib" / target / "lib"
                 self.assertTrue(alias.is_symlink())
                 self.assertEqual(alias.resolve(), destination / "targets" / target / "lib")
                 self.assertEqual((alias / "libcore.rlib").read_text(), "shared target " + target)
-        windows = destination / "hosts/x86_64-pc-windows-msvc/bin"
+            tools = destination / "hosts" / host / "sysroot/lib/rustlib" / host / "bin"
+            self.assertTrue(tools.is_dir())
+            self.assertEqual((tools / "rust-lld").read_text(), "native linker " + host)
+        windows = destination / "hosts/x86_64-pc-windows-msvc/sysroot/bin"
         self.assertTrue((windows / "rustc.exe").is_file())
         self.assertEqual((windows / "rustc_driver-fixture.dll").read_bytes(), b"native DLL")
         self.assertEqual(json.loads((destination / "hosts.json").read_text())["hosts"], list(RUST_HOSTS))

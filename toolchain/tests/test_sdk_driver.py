@@ -60,13 +60,13 @@ static int fixture_execvp(const char *file,char *const args[]) {
 int extract_sdk_zip(const char *archive,const char *root,enum SdkComponent component,const char *host) {
   char path[4096];
   if(component==SDK_RUST) {
-    const char *pieces[]={"rust-toolchain","hosts",host,"bin"};
+    const char *pieces[]={"rust-toolchain","hosts",host,"sysroot","bin"};
     snprintf(path,sizeof(path),"%s",root);
-    for(int i=0;i<4;i++){strcat(path,"/");strcat(path,pieces[i]);if(mkdir(path,0700))return -1;}
+    for(int i=0;i<5;i++){strcat(path,"/");strcat(path,pieces[i]);if(mkdir(path,0700))return -1;}
     for(int i=0;i<2;i++) {
       char source[4096],target[4096];
       const char *name=i?"cargo":"rustc",*suffix=IsWindows()?".exe":"";
-      snprintf(source,sizeof(source),"%s/rust-toolchain/hosts/%s/bin/%s%s",getenv("TEST_RESOURCES"),host,name,suffix);
+      snprintf(source,sizeof(source),"%s/rust-toolchain/hosts/%s/sysroot/bin/%s%s",getenv("TEST_RESOURCES"),host,name,suffix);
       snprintf(target,sizeof(target),"%s/%s%s",path,name,suffix);
       FILE *in=fopen(source,"rb"),*out=fopen(target,"wb");if(!in||!out)return -1;
       char buffer[512];size_t size;
@@ -118,7 +118,7 @@ class SdkDriverTest(unittest.TestCase):
         self.rustc = self.add_host(self.host)
 
     def add_host(self, host):
-        directory = self.root / "rust-toolchain/hosts" / host / "bin"
+        directory = self.root / "rust-toolchain/hosts" / host / "sysroot/bin"
         directory.mkdir(parents=True)
         suffix = ".exe" if "windows" in host else ""
         for name in ("rustc", "cargo"):
@@ -209,7 +209,7 @@ class SdkDriverTest(unittest.TestCase):
     def test_native_rust_uses_its_host_sysroot(self):
         result = self.run_driver("rust", "rustc", "--version")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("/hosts/" + self.host + "/bin/rustc", result.stdout)
+        self.assertIn("/hosts/" + self.host + "/sysroot/bin/rustc", result.stdout)
         self.assertIn("arg=--sysroot", result.stdout)
 
     def test_macos_rust_payload_is_selected_for_current_process_architecture(self):
@@ -217,7 +217,7 @@ class SdkDriverTest(unittest.TestCase):
         self.add_host(host)
         result = self.run_driver("rust", "rustc", "--version", system="Darwin")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("/hosts/" + host + "/bin/rustc", result.stdout)
+        self.assertIn("/hosts/" + host + "/sysroot/bin/rustc", result.stdout)
 
     def test_windows_rust_and_cargo_use_exe_files_and_clear_handoff_before_native_exec(self):
         host = "x86_64-pc-windows-msvc"
@@ -225,7 +225,7 @@ class SdkDriverTest(unittest.TestCase):
         for command in ("rustc", "cargo"):
             result = self.run_driver("rust", command, "--version", system="Windows")
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("/hosts/" + host + "/bin/" + command + ".exe", result.stdout)
+            self.assertIn("/hosts/" + host + "/sysroot/bin/" + command + ".exe", result.stdout)
             self.assertIn('exec "$0" "$@"', result.stdout)
             if command == "cargo":
                 self.assertIn("rustc=", result.stdout)

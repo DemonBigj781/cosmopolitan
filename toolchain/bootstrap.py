@@ -167,15 +167,15 @@ def rust_hosts(root):
     for host in hosts:
         suffix = ".exe" if "windows" in host else ""
         for executable in ("rustc", "cargo"):
-            if binary_host(root / "hosts" / host / "bin" / (executable + suffix)) != host:
+            if binary_host(root / "hosts" / host / "sysroot/bin" / (executable + suffix)) != host:
                 raise ValueError(f"Wrong compiler host in {host}")
         for notice in RUST_NOTICES:
-            if not (root / "hosts" / host / notice).is_file():
-                raise FileNotFoundError(root / "hosts" / host / notice)
+            if not (root / "hosts" / host / "sysroot" / notice).is_file():
+                raise FileNotFoundError(root / "hosts" / host / "sysroot" / notice)
         for target in value["targets"]:
             if not re.fullmatch(r"[A-Za-z0-9_-]+", target):
                 raise ValueError("Unsafe Rust target name")
-            link = root / "hosts" / host / "lib/rustlib" / target / "lib"
+            link = root / "hosts" / host / "sysroot/lib/rustlib" / target / "lib"
             if not link.is_symlink() or link.resolve(strict=True) != (root / "targets" / target / "lib").resolve(strict=True):
                 raise ValueError(f"Invalid shared Rust target alias: {link}")
     return hosts
@@ -205,7 +205,9 @@ def stage_rust(sources, destination, pins):
     with tempfile.TemporaryDirectory(prefix="rust-stage-", dir=destination.parent) as temporary:
         staged = Path(temporary) / "sysroot"
         for host, source in sources.items():
-            host_root = staged / "hosts" / host
+            # rustc's DLL-based sysroot inference special-cases a directory named
+            # exactly like its host triple. Keep the actual root one level below.
+            host_root = staged / "hosts" / host / "sysroot"
             host_root.mkdir(parents=True)
             shutil.copytree(source / "bin", host_root / "bin", symlinks=True)
             rustlib = source / "lib/rustlib"
@@ -223,7 +225,7 @@ def stage_rust(sources, destination, pins):
             raise ValueError("Missing native or cross-compilation Rust target libraries")
         for host in sources:
             for target in targets:
-                link = staged / "hosts" / host / "lib/rustlib" / target / "lib"
+                link = staged / "hosts" / host / "sysroot/lib/rustlib" / target / "lib"
                 link.parent.mkdir(parents=True, exist_ok=True)
                 # A trailing slash preserves directory intent for Windows symlinkat.
                 link.symlink_to(os.path.relpath(staged / "targets" / target / "lib", link.parent) + "/", target_is_directory=True)

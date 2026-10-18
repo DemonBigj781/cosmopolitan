@@ -29,4 +29,6 @@ runs:
       shell: bash
       run: |
         python3 toolchain/bootstrap.py rust /tmp/rust-embedded
-        /tmp/rust-embedded/hosts/x86_64-unknown-linux-gnu/bin/rustc --version
+        SYSROOT=/tmp/rust-embedded/hosts/x86_64-unknown-linux-gnu/sysroot
+        "$SYSROOT/bin/rustc" --version
+        test "$("$SYSROOT/bin/rustc" --print sysroot)" = "$SYSROOT"

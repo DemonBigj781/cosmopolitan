@@ -45,7 +45,7 @@ record identifies the source commit/worktree state, requested pins, actual input
 tree fingerprints, bootstrap checks, and Rust/Machin notice hashes. The sidecar
 also records the final executable's size and SHA256, after verifying the packaged
 notices. Machin's license accompanies its linked compiler; Rust notices retain
-their `rust-toolchain/hosts/<host>/share/doc/` paths.
+their `rust-toolchain/hosts/<host>/sysroot/share/doc/` paths.
 
 Bootstrap stamps are local build records, **not signed attestations**. Packaging
 rejects a stamped tree or Machin compiler that changed after bootstrap. Unstamped
@@ -288,14 +288,20 @@ offset handling. Both streams are drained concurrently; extraction-count checks
 remain enabled rather than hiding missing log records.
 
 The multi-host Rust payload keeps native compiler binaries, dynamic libraries,
-host tools, installer metadata, and notices under `rust-toolchain/hosts/<host>`.
+host tools, installer metadata, and notices under
+`rust-toolchain/hosts/<host>/sysroot`.
 Identical target standard-library files are stored once under
 `rust-toolchain/targets/<target>/lib`; each host sysroot has relative directory
 aliases to them. Conflicting duplicate files fail staging rather than being
 silently replaced. Windows DLLs remain beside their original executables.
-The ZIP stores shared targets before aliases, and extraction selects only the
-current host's compiler tree plus shared target data. Relocation preserves those
-aliases. `hosts.json` describes the full packaged inventory.
+The actual sysroot directory must not be named exactly like the host triple:
+the pinned compiler treats that name specially when deriving its default sysroot
+from the driver library. The explicit `sysroot` subdirectory preserves ordinary
+Cargo discovery without injecting sysroot flags. Native helper tools retain their
+original placement and dynamic-library paths inside each sysroot.
+The ZIP stores shared libraries before host sysroots. Extraction selects only the
+current host's compiler tree and helpers plus shared target data. Relocation
+preserves those aliases. `hosts.json` describes the full packaged inventory.
 
 `rust status` reports the selected compiler host. The dispatcher validates ELF,
 Mach-O, or PE headers before extraction, uses the selected sysroot, and directs

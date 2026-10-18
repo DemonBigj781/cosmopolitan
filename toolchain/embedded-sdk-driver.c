@@ -166,7 +166,7 @@ static int rust_source_available(void) {
 static int rust_paths(const char *root,char *sysroot,char *rustc,char *cargo) {
   const char *host=rust_host_triple(),*suffix=IsWindows()?".exe":"";
   if(!host)return -1;
-  return snprintf(sysroot,4096,"%s/rust-toolchain/hosts/%s",root,host)>=4096 ||
+  return snprintf(sysroot,4096,"%s/rust-toolchain/hosts/%s/sysroot",root,host)>=4096 ||
          snprintf(rustc,4096,"%s/bin/rustc%s",sysroot,suffix)>=4096 ||
          snprintf(cargo,4096,"%s/bin/cargo%s",sysroot,suffix)>=4096 ? -1 : 0;
 }

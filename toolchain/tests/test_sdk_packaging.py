@@ -22,7 +22,7 @@ from provenance import record_artifact
 from rust_fixtures import make_sysroot, binary_fixture
 
 HOST = RUST_HOSTS[0]
-RUST_PREFIX = "rust-toolchain/hosts/" + HOST
+RUST_PREFIX = "rust-toolchain/hosts/" + HOST + "/sysroot"
 
 
 class SdkPackagingTest(unittest.TestCase):
@@ -159,7 +159,7 @@ class SdkPackagingTest(unittest.TestCase):
             info = zipfile.ZipInfo(RUST_PREFIX + "/bin/foreign-compiler")
             info.create_system = 3
             info.external_attr = (stat.S_IFLNK | 0o777) << 16
-            archive.writestr(info, "../../../../bin/cosmocc")
+            archive.writestr(info, "../../../../../bin/cosmocc")
         destination = self.workdir / "cross-component"
         destination.mkdir()
         result = subprocess.run([str(self.extractor), str(self.archive), str(destination), "rust", HOST],
@@ -223,7 +223,7 @@ class SdkPackagingTest(unittest.TestCase):
         with self.package() as archive:
             for host in RUST_HOSTS:
                 for name in RUST_NOTICES:
-                    self.assertEqual(archive.read("rust-toolchain/hosts/" + host + "/" + name).decode(), "notice " + name)
+                    self.assertEqual(archive.read("rust-toolchain/hosts/" + host + "/sysroot/" + name).decode(), "notice " + name)
             record = json.loads(archive.read("toolchain-metadata/BUILD.json"))
             self.assertEqual(record["inputs"]["cosmocc"]["verification"], "unverified-local-input")
             self.assertEqual(record["inputs"]["rust_compiler"]["verification"], "unverified-local-input")
@@ -231,7 +231,7 @@ class SdkPackagingTest(unittest.TestCase):
             self.assertNotIn(str(self.workdir), json.dumps(record))
 
     def test_missing_compiler_notice_fails_before_packaging(self):
-        (self.compiler / "hosts" / HOST / RUST_NOTICES[0]).unlink()
+        (self.compiler / "hosts" / HOST / "sysroot" / RUST_NOTICES[0]).unlink()
         result = self.run_packager()
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.archive.exists())
@@ -321,9 +321,12 @@ class SdkPackagingTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 root = destination / "rust-toolchain"
                 self.assertEqual([p.name for p in (root / "hosts").iterdir()], [host])
-                alias = root / "hosts" / host / "lib/rustlib" / HOST / "lib"
+                alias = root / "hosts" / host / "sysroot/lib/rustlib" / HOST / "lib"
                 self.assertTrue(alias.is_symlink())
                 self.assertEqual((alias / "libcore.rlib").read_text(), "shared target " + HOST)
+                self.assertEqual((root / "hosts" / host / "sysroot/lib/rustlib" / host / "bin/rust-lld").read_text(), "native linker " + host)
+                for other in set(RUST_HOSTS) - {host}:
+                    self.assertFalse((root / "hosts" / other).exists())
 
     def test_patched_sdk_export_preserves_only_its_namespace(self):
         with self.package():

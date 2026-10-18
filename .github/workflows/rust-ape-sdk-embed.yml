@@ -32,8 +32,8 @@ jobs:
       - name: Verify pinned Cargo resolves relocated configuration paths
         run: |
           python3 toolchain/tests/check_cargo_config_paths.py \
-            --cargo /tmp/rust-embedded/hosts/x86_64-unknown-linux-gnu/bin/cargo \
-            --rustc /tmp/rust-embedded/hosts/x86_64-unknown-linux-gnu/bin/rustc
+            --cargo /tmp/rust-embedded/hosts/x86_64-unknown-linux-gnu/sysroot/bin/cargo \
+            --rustc /tmp/rust-embedded/hosts/x86_64-unknown-linux-gnu/sysroot/bin/rustc
       - name: Prepare patched Rust-APE SDK
         shell: bash
         run: |
@@ -65,10 +65,10 @@ jobs:
               required={
                   'rust-ape-sdk/generated/x86_64-unknown-linux-musl.json',
                   'rust-ape-sdk/vendor/cosmocc/bin/apelink',
-                  'rust-toolchain/hosts/x86_64-unknown-linux-gnu/bin/rustc',
-                  'rust-toolchain/hosts/x86_64-unknown-linux-gnu/bin/cargo',
-                  'rust-toolchain/hosts/x86_64-pc-windows-msvc/bin/rustc.exe',
-                  'rust-toolchain/hosts/aarch64-apple-darwin/bin/rustc',
+                  'rust-toolchain/hosts/x86_64-unknown-linux-gnu/sysroot/bin/rustc',
+                  'rust-toolchain/hosts/x86_64-unknown-linux-gnu/sysroot/bin/cargo',
+                  'rust-toolchain/hosts/x86_64-pc-windows-msvc/sysroot/bin/rustc.exe',
+                  'rust-toolchain/hosts/aarch64-apple-darwin/sysroot/bin/rustc',
                   'rust-ape/run.sh',
               }
               missing=required-names
@@ -185,7 +185,7 @@ jobs:
         run: |
           set -euo pipefail
           SDK="$RUNNER_TEMP/relocated-sdk/rust-ape-sdk"
-          RUST="$RUNNER_TEMP/relocated-sdk/rust-toolchain/hosts/x86_64-unknown-linux-gnu"
+          RUST="$RUNNER_TEMP/relocated-sdk/rust-toolchain/hosts/x86_64-unknown-linux-gnu/sysroot"
           export PATH="$RUST/bin:$PATH"
           export RUSTC="$RUST/bin/rustc"
           export CARGO_HOME="$RUNNER_TEMP/relocated-cargo-home"

@@ -34,6 +34,9 @@ def make_sysroot(root, host):
         lib = source / "lib/rustlib" / target / "lib"
         lib.mkdir(parents=True)
         (lib / "libcore.rlib").write_text("shared target " + target)
+    tools = source / "lib/rustlib" / host / "bin"
+    tools.mkdir()
+    (tools / "rust-lld").write_text("native linker " + host)
     (source / "lib/rustlib/multirust-channel-manifest.toml").write_text(
         'date = "2026-07-28"\n[pkg.rustc]\nversion = "pinned rustc"\n[pkg.cargo]\nversion = "pinned cargo"\n')
     for name in RUST_NOTICES:
