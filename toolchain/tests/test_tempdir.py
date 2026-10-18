@@ -50,5 +50,77 @@ class TempDirTest(unittest.TestCase):
         self.run_case("replace")
 
 
+class WindowsImageReleaseTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.build = tempfile.TemporaryDirectory(prefix="image-release-tests-")
+        cls.addClassCleanup(cls.build.cleanup)
+        root = Path(cls.build.name)
+        source = root / "release.c"
+        source.write_text(r'''
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+static int attempts[2],failures;
+static int fixture_unlinkat(int fd,const char *name,int flags) {
+  int index=(!strcmp(name,"held-a.exe")||!strcmp(name,"held.txt"))?0:!strcmp(name,"held-b.dll")?1:-1;
+  if(index>=0 && ++attempts[index]<=failures){errno=EACCES;return -1;}
+  return unlinkat(fd,name,flags);
+}
+static int fixture_sleep(const struct timespec *delay,struct timespec *remaining){return 0;}
+#define _WIN32 1
+#define unlinkat fixture_unlinkat
+#define nanosleep fixture_sleep
+#include "toolchain/tempdir.c"
+int main(int argc,char **argv) {
+  int nonimage=atoi(argv[1])==-1;
+  failures=nonimage?1000:atoi(argv[1]);
+  struct ToolchainTemp dir=TOOLCHAIN_TEMP_INIT;
+  if(toolchain_temp_open(&dir,"release-test"))return 2;
+  const char *names[]={nonimage?"held.txt":"held-a.exe","held-b.dll"};
+  for(int i=0;i<(failures==70?2:1);i++) {
+    int fd=openat(dir.fd,names[i],O_CREAT|O_WRONLY,0600);
+    if(fd<0||write(fd,"keep",4)!=4||close(fd))return 3;
+  }
+  int rc=toolchain_temp_close(&dir),error=errno,total=attempts[0]+attempts[1];
+  printf("%d %d %d\n",rc,error,total);
+  if(nonimage)return rc==-1 && error==EACCES && total==1 ? 0 : 6;
+  if(failures==3)return rc==0 && total==4 ? 0 : 4;
+  return rc==-1 && error==EACCES && total==(failures==70?102:101) ? 0 : 5;
+}
+''')
+        cls.binary = root / "release-test"
+        subprocess.run(shlex.split(os.environ.get("CC", "cc")) +
+                       ["-O0", "-I", str(ROOT), str(source), "-o", str(cls.binary)], check=True)
+
+    def run_case(self, failures, remaining):
+        with tempfile.TemporaryDirectory() as root:
+            result = subprocess.run([str(self.binary), str(failures)], env=dict(os.environ, TMPDIR=root),
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            files = list(Path(root).glob("release-test-*/held*"))
+            self.assertEqual(len(files), remaining)
+            for file in files:
+                self.assertEqual(file.read_bytes(), b"keep")
+
+    def test_transient_image_lock_is_released(self):
+        self.run_case(3, 0)
+
+    def test_permanent_permission_denial_is_not_hidden(self):
+        self.run_case(1000, 1)
+
+    def test_wait_budget_is_shared_across_the_owned_tree(self):
+        self.run_case(70, 1)
+
+    def test_non_image_permission_denial_is_not_retried(self):
+        self.run_case(-1, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -312,6 +312,10 @@ native compiler distributions packaged together, not a port of rustc to APE.
 On Windows the shell waits for native Rust/Cargo as a foreground child, rather
 than handing off its identity with `exec`, before the parent removes the SDK.
 Cleanup errors still fail the command and identify the owned path involved.
+On Windows only, regular `.exe`/`.dll` files denied deletion immediately after
+execution have a shared, approximately five-second release budget. No permissions
+or ACLs are changed, other file types/platforms are unaffected, and permanent
+denials still fail cleanup. Release waits are logged rather than hidden.
 
 `rust build` explicitly emits x86-64 and ARM64 GNU/Linux ELF objects on every
 compiler host before Cosmopolitan links them. It no longer assumes the compiler
