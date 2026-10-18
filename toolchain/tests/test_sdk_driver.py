@@ -55,7 +55,7 @@ int extract_sdk_zip(const char *archive,const char *root,enum SdkComponent compo
   snprintf(path,sizeof(path),"%s/bin",root);if(mkdir(path,0700))return -1;
   snprintf(path,sizeof(path),"%s/bin/cosmocc",root);
   FILE *file=fopen(path,"w");if(!file)return -1;
-  fputs("#!/bin/sh\nprintf 'descriptor=%s pid=%s user=%s\\n' \"${_COSMO_FDS_V2-unset}\" \"${_COSMO_PID-unset}\" \"${KEEP_ME-unset}\"\n",file);
+  fputs("#!/bin/sh\nprintf 'descriptor=%s pid=%s user=%s limit=%s\\n' \"${_COSMO_FDS_V2-unset}\" \"${_COSMO_PID-unset}\" \"${KEEP_ME-unset}\" \"${_COSMO_RLIMIT-unset}\"\n",file);
   fclose(file);return chmod(path,0700);
 }
 int main(int argc,char **argv) {
@@ -134,9 +134,10 @@ class SdkDriverTest(unittest.TestCase):
     def test_windows_shell_does_not_leak_cosmo_fd_handoff_to_its_children(self):
         result = self.run_driver("cc", "--version", system="Windows", extra_env={
             "TEST_REAL_SHELL": "1", "_COSMO_FDS_V2": "stale-descriptors",
-            "_COSMO_PID": "stale-pid", "KEEP_ME": "ordinary-user-value"})
+            "_COSMO_PID": "stale-pid", "KEEP_ME": "ordinary-user-value",
+            "_COSMO_RLIMIT": "resource-policy"})
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "descriptor=unset pid=unset user=ordinary-user-value\n")
+        self.assertEqual(result.stdout, "descriptor=unset pid=unset user=ordinary-user-value limit=resource-policy\n")
 
     def test_windows_shell_receives_pipes_instead_of_caller_log_handles(self):
         with (self.root / "stdout.log").open("w") as stdout, (self.root / "stderr.log").open("w") as stderr:

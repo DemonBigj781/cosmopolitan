@@ -272,7 +272,7 @@ int embedded_sdk_main(int argc,char **argv) {
      * so APE grandchildren use the shell's actual redirected Win32 handles. */
     args[n++]="-c";
     args[n++]="unset _COSMO_FDS_V2 _COSMO_PID _COSMO_PPID _COSMO_STOP_CHURN "
-              "_COSMO_STOP_EVENT _COSMO_RLIMIT _SIGS _MASK _IGNS; . \"$0\"";
+              "_COSMO_STOP_EVENT _SIGS _MASK _IGNS; . \"$0\"";
   }
   args[n++]=compiler;
   if(is_cpp) {

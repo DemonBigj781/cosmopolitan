@@ -275,7 +275,8 @@ rewritten.
 The Windows shell also clears Cosmopolitan's private process/descriptor handoff
 variables before sourcing the SDK script. Otherwise APE grandchildren can mistake
 stale descriptor metadata for the shell's command-substitution pipes and corrupt
-captured output. Ordinary environment variables are preserved.
+captured output. Ordinary environment variables and serialized resource-limit
+policy are preserved.
 Shell stdout/stderr on Windows are relayed through pipes to the parent so native
 processes do not overwrite earlier diagnostics through incompatible log-file
 offset handling. Both streams are drained concurrently; extraction-count checks
