@@ -276,6 +276,10 @@ The Windows shell also clears Cosmopolitan's private process/descriptor handoff
 variables before sourcing the SDK script. Otherwise APE grandchildren can mistake
 stale descriptor metadata for the shell's command-substitution pipes and corrupt
 captured output. Ordinary environment variables are preserved.
+Shell stdout/stderr on Windows are relayed through pipes to the parent so native
+processes do not overwrite earlier diagnostics through incompatible log-file
+offset handling. Both streams are drained concurrently; extraction-count checks
+remain enabled rather than hiding missing log records.
 
 The current shared artifact embeds a **Linux x86-64 Rust compiler/Cargo sysroot**.
 `rust status` reports the packaged compiler's platform. Rust commands inspect the

@@ -29,6 +29,17 @@ static int fixture_access(const char *path,int mode) {
   char buffer[4096];return access(fixture_path(path,buffer),mode);
 }
 static int fixture_execvp(const char *file,char *const args[]) {
+  if(getenv("TEST_FLOOD")) {
+    char out[4096],err[4096];memset(out,'A',sizeof(out));memset(err,'B',sizeof(err));
+    for(int i=0;i<128;i++) {
+      if(write(1,out,sizeof(out))!=sizeof(out)||write(2,err,sizeof(err))!=sizeof(err))_exit(76);
+    }
+    _exit(0);
+  }
+  if(getenv("TEST_EXPECT_PIPES")) {
+    struct stat out,err;
+    if(fstat(1,&out)||fstat(2,&err)||!S_ISFIFO(out.st_mode)||!S_ISFIFO(err.st_mode))_exit(77);
+  }
   if(getenv("TEST_REAL_SHELL"))return execv("/bin/sh",args);
   dprintf(1,"exec=%s\n",file);
   for(int i=0;args[i];i++)dprintf(1,"arg=%s\n",args[i]);
@@ -126,6 +137,23 @@ class SdkDriverTest(unittest.TestCase):
             "_COSMO_PID": "stale-pid", "KEEP_ME": "ordinary-user-value"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "descriptor=unset pid=unset user=ordinary-user-value\n")
+
+    def test_windows_shell_receives_pipes_instead_of_caller_log_handles(self):
+        with (self.root / "stdout.log").open("w") as stdout, (self.root / "stderr.log").open("w") as stderr:
+            result = subprocess.run([str(self.executable), "cc", "--version"], stdout=stdout, stderr=stderr,
+                env=dict(os.environ, TEST_HOST_OS="Windows", TEST_RESOURCES=str(self.root),
+                         TMPDIR=str(self.root), TEST_EXPECT_PIPES="1"))
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("exec=sh.exe", (self.root / "stdout.log").read_text())
+        self.assertIn("SDK materialized: C", (self.root / "stderr.log").read_text())
+
+    def test_windows_relay_drains_both_streams_beyond_pipe_capacity(self):
+        result = subprocess.run([str(self.executable), "cc", "--version"], text=True,
+            capture_output=True, timeout=20, env=dict(os.environ, TEST_HOST_OS="Windows",
+                TEST_RESOURCES=str(self.root), TMPDIR=str(self.root), TEST_FLOOD="1"))
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "A" * (4096 * 128))
+        self.assertEqual(result.stderr.split("\n", 1)[1], "B" * (4096 * 128))
 
     def test_unsupported_rust_host_fails_before_sdk_extraction(self):
         for system in ("Windows", "Darwin"):

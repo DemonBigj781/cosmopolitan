@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include "sdk_resources.h"
@@ -36,14 +38,66 @@ static int materialize(const char *self,enum SdkComponent component) {
   return 0;
 }
 
+static int make_pipe(int fds[2]) {
+  if(pipe(fds))return -1;
+  if(fcntl(fds[0],F_SETFD,FD_CLOEXEC) || fcntl(fds[1],F_SETFD,FD_CLOEXEC)) {
+    int error=errno;close(fds[0]);close(fds[1]);errno=error;return -1;
+  }
+  return 0;
+}
+static int forward_output(int out,int err) {
+  struct pollfd fds[2]={{out,POLLIN,0},{err,POLLIN,0}};
+  int open=2,rc=0;
+  while(open) {
+    int ready=poll(fds,2,-1);
+    if(ready<0) {if(errno==EINTR)continue;rc=125;break;}
+    for(int i=0;i<2;i++)if(fds[i].fd!=-1 && fds[i].revents) {
+      char buffer[8192];
+      ssize_t count=read(fds[i].fd,buffer,sizeof(buffer));
+      if(count<0 && errno==EINTR)continue;
+      if(count<=0) {
+        if(count<0)rc=125;
+        close(fds[i].fd);fds[i].fd=-1;open--;continue;
+      }
+      for(ssize_t done=0;done<count;) {
+        ssize_t wrote=write(i+1,buffer+done,(size_t)(count-done));
+        if(wrote<0 && errno==EINTR)continue;
+        if(wrote<=0) {rc=125;break;}
+        done+=wrote;
+      }
+    }
+  }
+  for(int i=0;i<2;i++)if(fds[i].fd!=-1)close(fds[i].fd);
+  return rc;
+}
 static int run(char *const argv[]) {
+  int out[2],err[2];
+  int relay=IsWindows(),io_error=0;
+  /* Native shells and APE grandchildren cannot safely share overlapped file
+   * offsets. Pipes let this process own all writes to the caller's log files. */
+  if(relay) {
+    if(make_pipe(out))return 125;
+    if(make_pipe(err)) {close(out[0]);close(out[1]);return 125;}
+  }
   pid_t p=fork();
-  if(p<0) return 125;
-  if(!p) { execvp(argv[0],argv); perror(argv[0]); _exit(127); }
+  if(p<0) {
+    if(relay) {close(out[0]);close(out[1]);close(err[0]);close(err[1]);}
+    return 125;
+  }
+  if(!p) {
+    if(relay) {
+      close(out[0]);close(err[0]);
+      if(dup2(out[1],1)<0 || dup2(err[1],2)<0)_exit(125);
+      close(out[1]);close(err[1]);
+    }
+    execvp(argv[0],argv);perror(argv[0]);_exit(127);
+  }
+  if(relay) {close(out[1]);close(err[1]);io_error=forward_output(out[0],err[0]);}
   int status;
   pid_t waited;
   do { waited=waitpid(p,&status,0); } while(waited<0 && errno==EINTR);
   if(waited<0) return 125;
+  if(io_error)return io_error;
   return WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);
 }
 static int run_shell(char *const argv[]) {
