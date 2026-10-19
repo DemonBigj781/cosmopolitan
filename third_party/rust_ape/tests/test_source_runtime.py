@@ -43,6 +43,12 @@ class SourceRuntimeTests(unittest.TestCase):
         self.assertIn("!pr->isvfork && __proc_is_native_child(pr->hProcess)", source)
         self.assertIn("__proc_native_wstatus(dwExitCode)", source)
 
+    def test_fchdir_uses_the_source_runtime_chdir_entrypoint(self):
+        source = (SHIM / "fchdir-nt.c").read_text()
+        self.assertNotIn("sys_chdir_nt_impl", source)
+        self.assertIn("return sys_chdir_nt16(dir, len)", source)
+        self.assertIn("int sys_chdir_nt16(", (ROOT / "libc/calls/chdir-nt.c").read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

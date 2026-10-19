@@ -33,7 +33,7 @@
 #include "libc/sysv/pib.h"
 #include "libc/sysv/errfuns.h"
 
-int sys_chdir_nt_impl(char16_t[hasatleast PATH_MAX], uint32_t);
+int sys_chdir_nt16(char16_t[hasatleast PATH_MAX], uint32_t);
 
 textwindows int sys_fchdir_nt(int dirfd) {
   char16_t dir[PATH_MAX];
@@ -42,9 +42,13 @@ textwindows int sys_fchdir_nt(int dirfd) {
   uint32_t len = GetFinalPathNameByHandle(
       __get_pib()->fds.p[dirfd].handle, dir, ARRAYLEN(dir),
       kNtFileNameNormalized | kNtVolumeNameDos);
-  if (len && len < ARRAYLEN(dir) && dir[0] == '\\' && dir[1] == '\\' &&
+  if (!len)
+    return __winerr();
+  if (len >= ARRAYLEN(dir))
+    return enametoolong();
+  if (len >= 4 && dir[0] == '\\' && dir[1] == '\\' &&
       dir[2] == '?' && dir[3] == '\\') {
-    if (dir[4] == 'U' && dir[5] == 'N' && dir[6] == 'C' && dir[7] == '\\') {
+    if (len >= 8 && dir[4] == 'U' && dir[5] == 'N' && dir[6] == 'C' && dir[7] == '\\') {
       // \\?\UNC\srv\share\x -> \\srv\share\x
       if (len - 6 < 260) {
         memmove(dir + 2, dir + 8, (len - 8 + 1) * sizeof(char16_t));
@@ -58,5 +62,5 @@ textwindows int sys_fchdir_nt(int dirfd) {
       }
     }
   }
-  return sys_chdir_nt_impl(dir, len);
+  return sys_chdir_nt16(dir, len);
 }
