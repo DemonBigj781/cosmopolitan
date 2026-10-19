@@ -39,6 +39,8 @@
 #include <libc/str/str.h>
 #include <libc/sysv/consts/at.h>
 #include <libc/sysv/errfuns.h>
+#include <libc/sysv/pib.h>
+#include "path-internal.h"
 
 // [rust-ape] shim/procfs/core/: a dirfd-relative access that lands inside
 // the materialized /proc tree refreshes what it is about to touch.
@@ -57,14 +59,31 @@ static bool IsAbsolutePathWin32(char16_t *path) {
 }
 
 static textwindows int __mkntpathath_impl(int64_t dirhand, const char *path,
-                                          int flags,
+                                          bool used_explicit_drive_letter,
                                           char16_t file[hasatleast PATH_MAX]) {
   size_t n;
   char16_t dir[PATH_MAX];
   uint32_t dirlen, filelen;
   if (!isutf8(path, -1))
     return eilseq();  // thwart overlong nul in conversion
-  if ((filelen = __mkntpath2(path, file, flags)) == -1)
+  char drive_path[PATH_MAX];
+  if (dirhand != AT_FDCWD && !used_explicit_drive_letter && IsAlpha(path[0]) &&
+      (!path[1] || path[1] == '/' || path[1] == '\\')) {
+    char16_t root[PATH_MAX];
+    char16_t expected[8] = u"\\\\?\\C:\\";
+    expected[4] = __ape_shim_cosmos_drive();
+    if (GetFinalPathNameByHandle(dirhand, root, PATH_MAX,
+                                kNtFileNameNormalized | kNtVolumeNameDos) == 7 &&
+        !memcmp(root, expected, 7 * sizeof(char16_t))) {
+      size_t size = strlen(path);
+      if (size + 2 > sizeof drive_path)
+        return enametoolong();
+      drive_path[0] = '/';
+      memcpy(drive_path + 1, path, size + 1);
+      path = drive_path;
+    }
+  }
+  if ((filelen = __ape_shim_mkntpath2(path, file)) == -1)
     return -1;
   if (!filelen)
     return enoent();
@@ -78,7 +97,7 @@ static textwindows int __mkntpathath_impl(int64_t dirhand, const char *path,
     dir[dirlen] = u'\\';
     memcpy(dir + dirlen + 1, file, (filelen + 1) * sizeof(char16_t));
     memcpy(file, dir, ((n = dirlen + 1 + filelen) + 1) * sizeof(char16_t));
-    n = __normntpath(file, n);
+    n = __ape_shim_normntpath(file, n);
 
     // \\?\-namespace paths break some things when they are not needed;
     // downgrade both forms it takes (drive and UNC), and keep the long
@@ -106,17 +125,18 @@ static textwindows int __mkntpathath_impl(int64_t dirhand, const char *path,
     __ape_shim_procfs_relative(file, n); // [rust-ape]
     return n;
   } else {
-    filelen = __normntpath(file, filelen);
+    filelen = __ape_shim_normntpath(file, filelen);
     return filelen;
   }
 }
 
-textwindows int __mkntpathath(int64_t dirhand, const char *path, int flags,
-                              char16_t file[hasatleast PATH_MAX]) {
+textwindows int __mkntpathath(int64_t dirhand, const char *path,
+                              char16_t file[hasatleast PATH_MAX],
+                              bool used_explicit_drive_letter) {
 
   // convert the path.
   int len;
-  if ((len = __mkntpathath_impl(dirhand, path, flags, file)) == -1)
+  if ((len = __mkntpathath_impl(dirhand, path, used_explicit_drive_letter, file)) == -1)
     return -1;
 
   // if path ends with a slash, then we need to manually do what linux
@@ -135,15 +155,17 @@ textwindows int __mkntpathath(int64_t dirhand, const char *path, int flags,
   return len;
 }
 
-textwindows int __mkntpathat(int dirfd, const char *path, int flags,
+textwindows int __mkntpathat(int dirfd, const char *path,
                              char16_t file[hasatleast PATH_MAX]) {
   int64_t dirhand;
+  bool used_explicit_drive_letter = false;
   if (dirfd == AT_FDCWD) {
     dirhand = AT_FDCWD;
   } else if (__isfdkind(dirfd, kFdFile)) {
-    dirhand = g_fds.p[dirfd].handle;
+    dirhand = __get_pib()->fds.p[dirfd].handle;
+    used_explicit_drive_letter = __get_pib()->fds.p[dirfd].used_explicit_drive_letter;
   } else {
     return ebadf();
   }
-  return __mkntpathath(dirhand, path, flags, file);
+  return __mkntpathath(dirhand, path, file, used_explicit_drive_letter);
 }

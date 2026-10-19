@@ -1,8 +1,9 @@
 # Rust runtime for the WebGPU integration
 
 This directory vendors the experimental [rust-ape SDK](https://github.com/starccy/rust-ape)
-at commit `0e2d0a89f4c089c7f21377a9c7ce51a6e82c2791`. The unmodified source is
-in `upstream/`; its MIT license and original documentation are included.
+at base commit `0e2d0a89f4c089c7f21377a9c7ce51a6e82c2791`. The source is
+in `upstream/`, with local adaptations recorded in `UPSTREAM`; its MIT license
+and original documentation are included.
 
 Rust's normal Linux standard library bakes in Linux constants, structure layouts,
 thread-local storage and system calls. Linking those objects with Cosmopolitan
@@ -34,8 +35,13 @@ build directory. The wrapper does not change the user's default Rust toolchain.
 The source snapshot is staged once with a content fingerprint. Later commands
 preserve SDK source files and lockfiles; a changed vendored snapshot requires a
 new build directory instead of silently resetting that working copy.
-The vendored SDK uses a released Cosmocc rather than rebuilding this repository's
-entire C toolchain; the exact runtime/toolchain choice remains explicit.
+`setup` installs bootstrap tools; it does not produce the final runtime. The
+source-runtime integration must build this fork's toolchain and install its
+headers, runtime and loader into the SDK before Rust compilation. Then run
+`third_party/rust_ape/run.sh gen-shim` to regenerate constant tables against
+those headers. The adapted shims are not compatible with the stock 4.0.2
+runtime. The Code build driver performs these stages and checks every shim
+before compiling Code; source-runtime Linux/Windows validation is in progress.
 
 For a new executable project under the build directory:
 

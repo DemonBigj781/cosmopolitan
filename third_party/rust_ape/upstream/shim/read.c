@@ -221,29 +221,29 @@ static ssize_t readv_impl(int fd, const struct iovec *iov, int iovlen) {
     if (n != -2) return n;
   }
 
-  if (fd < g_fds.n && g_fds.p[fd].kind == kFdZip) {
+  if (fd < __get_pib()->fds.n && __get_pib()->fds.p[fd].kind == kFdZip) {
     return _weaken(__zipos_read)(
-        (struct ZiposHandle *)(intptr_t)g_fds.p[fd].handle, iov, iovlen, -1);
+        (struct ZiposHandle *)(intptr_t)__get_pib()->fds.p[fd].handle, iov, iovlen, -1);
   } else if (IsLinux() || IsXnu() || IsFreebsd() || IsOpenbsd() || IsNetbsd()) {
     if (iovlen == 1) {
       return sys_read(fd, iov[0].iov_base, iov[0].iov_len);
     } else {
       return sys_readv(fd, iov, iovlen);
     }
-  } else if (fd >= g_fds.n) {
+  } else if (fd >= __get_pib()->fds.n) {
     return ebadf();
   } else if (IsMetal()) {
     return sys_readv_metal(fd, iov, iovlen);
   } else if (IsWindows()) {
-    if (g_fds.p[fd].kind == kFdConsole) __ape_shim_console_before_wait(fd);
+    if (__get_pib()->fds.p[fd].kind == kFdConsole) __ape_shim_console_before_wait(fd);
     ssize_t n = sys_readv_nt(fd, iov, iovlen);
-    if (n > 0 && iovlen == 1 && g_fds.p[fd].kind == kFdConsole) {
+    if (n > 0 && iovlen == 1 && __get_pib()->fds.p[fd].kind == kFdConsole) {
       n = CoalesceConsoleEscape(fd, iov[0].iov_base, iov[0].iov_len, n);
       n = WrapConsolePaste(fd, iov[0].iov_base, iov[0].iov_len, n);
     }
     // [rust-ape] ReadFile on a directory handle fails ERROR_INVALID_FUNCTION,
     // which cosmo reports as EINVAL; Linux says EISDIR (cat /proc/x/cwd)
-    if (n == -1 && errno == EINVAL && g_fds.p[fd].kind == kFdFile) {
+    if (n == -1 && errno == EINVAL && __get_pib()->fds.p[fd].kind == kFdFile) {
       struct stat st;
       if (!fstat(fd, &st) && S_ISDIR(st.st_mode)) return eisdir();
       errno = EINVAL;

@@ -159,11 +159,11 @@ struct dirent_netbsd {
 };
 
 static void lockdir(DIR *dir) {
-  _pthread_mutex_lock(&dir->lock);
+  pthread_mutex_lock(&dir->lock);
 }
 
 static void unlockdir(DIR *dir) {
-  _pthread_mutex_unlock(&dir->lock);
+  pthread_mutex_unlock(&dir->lock);
 }
 
 static textwindows dontinline int fdopendir_nt(DIR *res, int fd) {
@@ -171,7 +171,7 @@ static textwindows dontinline int fdopendir_nt(DIR *res, int fd) {
     return ebadf();
   }
   res->name16len = GetFinalPathNameByHandle(
-      g_fds.p[fd].handle, res->name16, ARRAYLEN(res->name16),
+      __get_pib()->fds.p[fd].handle, res->name16, ARRAYLEN(res->name16),
       kNtFileNameNormalized | kNtVolumeNameDos);
   if (!res->name16len) {
     return __winerr();
@@ -203,7 +203,7 @@ static textwindows dontinline int fdopendir_nt(DIR *res, int fd) {
 }
 
 static textwindows uint8_t GetNtDirentType(struct NtWin32FindData *w) {
-  switch (w->dwFileType) {
+  switch (w->__dwFileType) {
     case kNtFileTypeDisk:
       return DT_BLK;
     case kNtFileTypeChar:
@@ -304,7 +304,7 @@ TryAgain:
                  kNtFileAttributeNormal | kNtFileFlagBackupSemantics |
                      kNtFileFlagOpenReparsePoint,
                  0);
-  if (fh != kNtInvalidHandleValue) {
+  if (fh != -1) {
     struct NtByHandleFileInformation wst;
     if (GetFileInformationByHandle(fh, &wst)) {
       ino = (uint64_t)wst.nFileIndexHigh << 32 | wst.nFileIndexLow;
@@ -350,7 +350,7 @@ DIR *fdopendir(int fd) {
     enotdir();
     return 0;
   }
-  if (IsLinux() && (__sys_fcntl(fd, F_GETFL) & O_PATH)) {
+  if (IsLinux() && (__sys_fcntl(fd, F_GETFL) & _O_PATH)) {
     ebadf();
     return 0;
   }
@@ -394,7 +394,7 @@ DIR *fdopendir(int fd) {
   dir->iszip = true;
 
   // ensure open /zip/... file is a directory
-  struct ZiposHandle *h = (struct ZiposHandle *)(intptr_t)g_fds.p[fd].handle;
+  struct ZiposHandle *h = (struct ZiposHandle *)(intptr_t)__get_pib()->fds.p[fd].handle;
   if (h->cfile != ZIPOS_SYNTHETIC_DIRECTORY &&
       !S_ISDIR(GetZipCfileMode(h->zipos->map + h->cfile))) {
     free(dir);

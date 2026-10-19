@@ -30,6 +30,7 @@
 #include "libc/macros.h"
 #include "libc/nt/files.h"
 #include "libc/str/str.h"
+#include "libc/sysv/pib.h"
 #include "libc/sysv/errfuns.h"
 
 int sys_chdir_nt_impl(char16_t[hasatleast PATH_MAX], uint32_t);
@@ -39,7 +40,7 @@ textwindows int sys_fchdir_nt(int dirfd) {
   if (!__isfdkind(dirfd, kFdFile))
     return ebadf();
   uint32_t len = GetFinalPathNameByHandle(
-      g_fds.p[dirfd].handle, dir, ARRAYLEN(dir),
+      __get_pib()->fds.p[dirfd].handle, dir, ARRAYLEN(dir),
       kNtFileNameNormalized | kNtVolumeNameDos);
   if (len && len < ARRAYLEN(dir) && dir[0] == '\\' && dir[1] == '\\' &&
       dir[2] == '?' && dir[3] == '\\') {

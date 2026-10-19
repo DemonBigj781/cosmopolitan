@@ -68,6 +68,7 @@
 #include "libc/str/str.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/errfuns.h"
+#include "path-internal.h"
 
 // [rust-ape] shim/procfs/core/
 int __ape_shim_procfs_rewrite(const char *, char *, unsigned long);
@@ -225,7 +226,7 @@ static bool IsCollapsedUnc(const char *path) {
   return UncServerKnown(path + 1, k - 1);
 }
 
-textwindows size_t __normntpath(char16_t *p, size_t n) {
+textwindows size_t __ape_shim_normntpath(char16_t *p, size_t n) {
   size_t i, j;
   for (j = i = 0; i < n; ++i) {
     int c = p[i];
@@ -313,7 +314,7 @@ textwindows static size_t __normuncrest(char16_t *p, size_t n,
 
 textwindows int __mkntpath(const char *path,
                            char16_t path16[hasatleast PATH_MAX]) {
-  return __mkntpath2(path, path16, -1);
+  return __ape_shim_mkntpath2(path, path16);
 }
 
 /**
@@ -327,14 +328,13 @@ textwindows int __mkntpath(const char *path,
  * 4. Add `\\?\` prefix for paths exceeding 260 chars
  * 5. Remapping well-known paths, e.g. `/dev/null` → `NUL`
  *
- * @param flags is used by open()
  * @param path16 is shortened so caller can prefix, e.g. \\.\pipe\, and
  *     due to a plethora of special-cases throughout the Win32 API
  * @return short count excluding NUL on success, or -1 w/ errno
  * @error ENAMETOOLONG
  */
-textwindows int __mkntpath2(const char *path,
-                            char16_t path16[hasatleast PATH_MAX], int flags) {
+textwindows int __ape_shim_mkntpath2(const char *path,
+                            char16_t path16[hasatleast PATH_MAX]) {
   // 1. Need +1 for NUL-terminator
   // 2. Need +1 for UTF-16 overflow
   // 3. Need ≥2 for SetCurrentDirectory trailing slash requirement
@@ -564,11 +564,11 @@ textwindows int __mkntpath2(const char *path,
                            rest8);
         if (len > 0 && (size_t)len < sizeof full &&
             __ape_shim_unc_server_dir(root8, srvlen, procbuf, sizeof procbuf))
-          return __mkntpath2(full, path16, flags);
+          return __ape_shim_mkntpath2(full, path16);
       }
     }
   } else {
-    n = __normntpath(p, n);
+    n = __ape_shim_normntpath(p, n);
   }
 
   // our path is now stored at `path16` with length `n`

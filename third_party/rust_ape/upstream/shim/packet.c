@@ -67,9 +67,9 @@ static int g_pkt_live; // fast path: nonzero only once a packet socket exists
 // open with the handle it was registered with. Anything else means the fd
 // was closed, or reused by an unrelated open.
 static bool fd_is(int fd, long handle) {
-    if (fd < 0 || (size_t)fd >= g_fds.n) return false;
-    if (g_fds.p[fd].kind == 0 /* kFdEmpty */) return false;
-    return g_fds.p[fd].handle == handle;
+    if (fd < 0 || (size_t)fd >= __get_pib()->fds.n) return false;
+    if (__get_pib()->fds.p[fd].kind == 0 /* kFdEmpty */) return false;
+    return __get_pib()->fds.p[fd].handle == handle;
 }
 
 static void reap_locked(void) {
@@ -173,7 +173,7 @@ static bool adapter_addrs(unsigned ifindex, struct ifaddrs4_6 *out) {
 static int sniff_on(int fd, const struct sockaddr *sa, unsigned len) {
     if (bind(fd, sa, len) == -1) return -1;
     uint32_t on = RCVALL_ON, got = 0;
-    if (WSAIoctl(g_fds.p[fd].handle, SIO_RCVALL, &on, sizeof on, 0, 0, &got, 0,
+    if (WSAIoctl(__get_pib()->fds.p[fd].handle, SIO_RCVALL, &on, sizeof on, 0, 0, &got, 0,
                  0) != 0)
         return -1;
     return 0;
@@ -206,7 +206,7 @@ int __ape_shim_packet_socket(int lin_type, int protocol) {
     memset(p, 0, sizeof *p);
     p->live = true;
     p->fd = fd;
-    p->handle = g_fds.p[fd].handle;
+    p->handle = __get_pib()->fds.p[fd].handle;
     p->fd6 = -1;
     g_pkt_live++;
     pthread_mutex_unlock(&g_pkt_lock);

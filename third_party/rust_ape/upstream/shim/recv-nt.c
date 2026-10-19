@@ -35,6 +35,7 @@
 #include "libc/sysv/consts/fio.h"
 #include "libc/sysv/consts/o.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/sysv/pib.h"
 #include "libc/vga/vga.internal.h"
 #ifdef __x86_64__
 
@@ -75,7 +76,7 @@ textwindows ssize_t sys_recv_nt(int fd, const struct iovec *iov, size_t iovlen,
   if (flags & ~(_MSG_DONTWAIT | _MSG_OOB | _MSG_PEEK | _MSG_WAITALL))
     return einval();
   ssize_t rc;
-  struct Fd *f = g_fds.p + fd;
+  struct Fd *f = __get_pib()->fds.p + fd;
   sigset_t waitmask = __sig_block();
 
   // "Be aware that if the underlying transport provider does not

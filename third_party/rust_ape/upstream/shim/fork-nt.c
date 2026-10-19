@@ -1,24 +1,4 @@
-// [rust-ape] Windows fork(), replacing cosmo 4.0.2's libc.a(fork-nt.o), with
-// one change: address-space reservations are copied as reservations.
-//
-// cosmo's NT fork rebuilds every private map in the child with a full-size
-// VirtualAllocEx(MEM_RESERVE|MEM_COMMIT) and WriteProcessMemory of the whole
-// span. shim/mmap.c turns a PROT_NONE anonymous mapping into a real NT
-// reservation (address space only, committed piecewise by mprotect) and tags
-// it MAP_APE_RESERVE; upstream's loop would commit the whole span in the
-// child (4 GiB for one edit document: ERROR_COMMITMENT_LIMIT, fork fails)
-// and read uncommitted pages. Such a map is now reserved in the child with
-// one VirtualAllocEx(MEM_RESERVE), then walked with VirtualQuery in the
-// parent: each committed run is committed in the child, copied, and given
-// the parent's page protection. The walk follows NT's own page state, so
-// adjacent 64 KiB pieces a growing buffer committed one at a time are one
-// copy, and the cost is proportional to committed bytes, not reserved ones.
-// The child side needs no change: private maps are already handed over by
-// the parent and only get their bookkeeping fixed there.
-//
-// Everything else is upstream, verbatim. Derived from cosmopolitan
-// libc/proc/fork-nt.c (tag 4.0.2), ISC license:
-
+// Rust-APE reservation support rebased on this fork's process-state ABI.
 // cflags: -D_COSMO_SOURCE
 #include <stdbool.h>
 /*-*- mode:c;indent-tabs-mode:nil;c-basic-offset:2;tab-width:8;coding:utf-8 -*-│
@@ -39,19 +19,26 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
+#include "libc/assert.h"
+#include "libc/calls/flocks.h"
 #include "libc/calls/internal.h"
 #include "libc/calls/sig.internal.h"
 #include "libc/calls/state.internal.h"
+#include "libc/calls/syscall-nt.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
+#include "libc/dce.h"
 #include "libc/errno.h"
+#include "libc/intrin/atomic.h"
 #include "libc/intrin/directmap.h"
 #include "libc/intrin/dll.h"
+#include "libc/intrin/fds.h"
 #include "libc/intrin/kprintf.h"
 #include "libc/intrin/maps.h"
 #include "libc/intrin/strace.h"
 #include "libc/intrin/weaken.h"
 #include "libc/limits.h"
 #include "libc/macros.h"
+#include "libc/mem/alloca.h"
 #include "libc/nt/enum/creationdisposition.h"
 #include "libc/nt/enum/filemapflags.h"
 #include "libc/nt/enum/memflags.h"
@@ -59,10 +46,11 @@
 #include "libc/nt/enum/processcreationflags.h"
 #include "libc/nt/enum/startf.h"
 #include "libc/nt/errors.h"
+#include "libc/nt/events.h"
+#include "libc/nt/files.h"
 #include "libc/nt/memory.h"
 #include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
-#include "libc/nt/struct/memorybasicinformation.h"
 #include "libc/nt/struct/processinformation.h"
 #include "libc/nt/struct/startupinfo.h"
 #include "libc/nt/thread.h"
@@ -76,25 +64,37 @@
 #include "libc/sysv/consts/prot.h"
 #include "libc/sysv/consts/sig.h"
 #include "libc/sysv/errfuns.h"
+#include "libc/sysv/pib.h"
 #include "libc/thread/tls.h"
+#include "libc/nt/struct/memorybasicinformation.h"
 #include "mmap.h"
-#ifdef __x86_64__
+#if SupportsWindows()
 
 extern long __klog_handle;
 extern bool __winmain_isfork;
 extern intptr_t __winmain_jmpbuf[5];
 extern struct CosmoTib *__winmain_tib;
 
-__msabi extern typeof(TlsAlloc) *const __imp_TlsAlloc;
 __msabi extern typeof(MapViewOfFileEx) *const __imp_MapViewOfFileEx;
+__msabi extern typeof(TerminateProcess) *const __imp_TerminateProcess;
+__msabi extern typeof(TlsAlloc) *const __imp_TlsAlloc;
 __msabi extern typeof(VirtualProtectEx) *const __imp_VirtualProtectEx;
+
+static textwindows void *sys_fork_nt_malloc(size_t size) {
+  return HeapAlloc(GetProcessHeap(), 0, size);
+}
+
+static textwindows void sys_fork_nt_free(void *ptr) {
+  HeapFree(GetProcessHeap(), 0, ptr);
+}
 
 textwindows wontreturn static void AbortFork(const char *func, void *addr) {
 #if SYSDEBUG
   kprintf("fork() %!s(%lx) failed with win32 error %u\n", func, addr,
           GetLastError());
 #endif
-  TerminateThisProcess(SIGSTKFLT);
+  __imp_TerminateProcess(-1, SIGURG);
+  __builtin_unreachable();
 }
 
 textwindows static void ViewOrDie(int64_t h, uint32_t access, size_t pos,
@@ -109,7 +109,6 @@ TryAgain:
     AbortFork("ViewOrDie", base);
   }
 }
-
 
 // [rust-ape] copy a shim reservation: reserve the span, then commit and copy
 // only the runs the parent really has committed, with their protection.
@@ -156,9 +155,12 @@ textwindows static void sys_fork_nt_child(void) {
   // setup runtime
   __klog_handle = 0;
   __tls_index = __imp_TlsAlloc();
-  __morph_tls();
   __set_tls_win32(__winmain_tib);
   __tls_enabled = true;
+
+  // forget posix advisory locks
+  if (_weaken(__flocks_wipe))
+    _weaken(__flocks_wipe)();
 
   // resurrect shared memory mappings
   struct Map *next;
@@ -231,17 +233,18 @@ textwindows static void sys_fork_nt_child(void) {
 
   // rewrap the stdin named pipe hack
   // since the handles closed on fork
-  g_fds.p[0].handle = GetStdHandle(kNtStdInputHandle);
-  g_fds.p[1].handle = GetStdHandle(kNtStdOutputHandle);
-  g_fds.p[2].handle = GetStdHandle(kNtStdErrorHandle);
+  __get_pib()->fds.p[0].handle = GetStdHandle(kNtStdInputHandle);
+  __get_pib()->fds.p[1].handle = GetStdHandle(kNtStdOutputHandle);
+  __get_pib()->fds.p[2].handle = GetStdHandle(kNtStdErrorHandle);
 }
 
-textwindows static int sys_fork_nt_parent(uint32_t dwCreationFlags) {
+textwindows static int sys_fork_nt_parent(int child_pid, intptr_t hStopEvent) {
 
   // allocate process object
   struct Proc *proc;
   if (!(proc = __proc_new()))
     return -1;
+  proc->hStopEvent = hStopEvent;
 
   // get path of this executable
   char16_t prog[PATH_MAX];
@@ -252,30 +255,37 @@ textwindows static int sys_fork_nt_parent(uint32_t dwCreationFlags) {
     return -1;
   }
 
+  // taint all cursors so they can't be cached
+  for (int fd = 0; fd < __get_pib()->fds.n; ++fd)
+    if (__get_pib()->fds.p[fd].kind == kFdFile)
+      if (__get_pib()->fds.p[fd].cursor)
+        __get_pib()->fds.p[fd].cursor->is_multiprocess = true;
+
   // spawn new process in suspended state
   struct NtProcessInformation procinfo;
   struct NtStartupInfo startinfo = {
       .cb = sizeof(struct NtStartupInfo),
       .dwFlags = kNtStartfUsestdhandles,
-      .hStdInput = g_fds.p[0].handle,
-      .hStdOutput = g_fds.p[1].handle,
-      .hStdError = g_fds.p[2].handle,
+      .hStdInput = __get_pib()->fds.p[0].handle,
+      .hStdOutput = __get_pib()->fds.p[1].handle,
+      .hStdError = __get_pib()->fds.p[2].handle,
   };
+  char16_t *cwd = sys_fork_nt_malloc(PATH_MAX * sizeof(char16_t));
+  GetCurrentDirectory(PATH_MAX, cwd);
   if (!CreateProcess(prog, 0, 0, 0, true,
-                     dwCreationFlags | kNtCreateSuspended |
+                     __get_pib()->dwCreationFlags | kNtCreateSuspended |
                          kNtInheritParentAffinity |
                          kNtCreateUnicodeEnvironment |
                          GetPriorityClass(GetCurrentProcess()),
-                     0, 0, &startinfo, &procinfo)) {
+                     0, cwd, &startinfo, &procinfo)) {
+    sys_fork_nt_free(cwd);
     STRACE("fork() %s() failed w/ %m %d", "CreateProcess", GetLastError());
     dll_make_first(&__proc.free, &proc->elem);
     if (errno != ENOMEM)
       eagain();
     return -1;
   }
-
-  // ensure process can be signaled before returning
-  UnmapViewOfFile(__sig_map_process(procinfo.dwProcessId, kNtOpenAlways));
+  sys_fork_nt_free(cwd);
 
   // let's go
   bool ok = true;
@@ -283,23 +293,26 @@ textwindows static int sys_fork_nt_parent(uint32_t dwCreationFlags) {
   // copy memory manager maps
   for (struct MapSlab *slab =
            atomic_load_explicit(&__maps.slabs, memory_order_acquire);
-       slab; slab = slab->next) {
-    ok = ok && !!VirtualAllocEx(procinfo.hProcess, slab, MAPS_SIZE,
+       slab->next;  // exclude __maps.slab1 which is static memory
+       slab = slab->next) {
+    ok = ok && !!VirtualAllocEx(procinfo.hProcess, slab, MAPS_SLAB_SIZE,
                                 kNtMemReserve | kNtMemCommit, kNtPageReadwrite);
-    ok =
-        ok && !!WriteProcessMemory(procinfo.hProcess, slab, slab, MAPS_SIZE, 0);
+    ok = ok &&
+         !!WriteProcessMemory(procinfo.hProcess, slab, slab, MAPS_SLAB_SIZE, 0);
   }
 
   // copy private memory maps
   int alloc_prot = -1;
-  char *skip_until = 0;  // [rust-ape] end of the reservation just copied
+  char *skip_until = 0;
   for (struct Map *map = __maps_first(); map; map = __maps_next(map)) {
     if (map->addr < skip_until)
-      continue;  // [rust-ape] piece of a reservation, already handled
+      continue;
     if ((map->flags & MAP_TYPE) == MAP_SHARED)
       continue;  // shared memory doesn't need to be copied to subprocess
     if ((map->flags & MAP_NOFORK) && (map->flags & MAP_TYPE) != MAP_FILE)
       continue;  // ignore things like signal worker stack memory
+    if ((map->flags & MAP_NOFORK) && map->prot == PROT_READ)
+      continue;  // we don't need to copy executable .rodata
     if (__maps_isalloc(map)) {
       size_t allocsize = map->size;
       for (struct Map *m2 = __maps_next(map); m2; m2 = __maps_next(m2)) {
@@ -310,7 +323,6 @@ textwindows static int sys_fork_nt_parent(uint32_t dwCreationFlags) {
         }
       }
       if (map->flags & MAP_APE_RESERVE) {
-        // [rust-ape] shim reservation: copy by real page state
         ok = ok && CopyReservation(procinfo.hProcess, map->addr, allocsize);
         skip_until = map->addr + allocsize;
         continue;
@@ -365,11 +377,10 @@ textwindows static int sys_fork_nt_parent(uint32_t dwCreationFlags) {
 
   // return pid of new process
   if (ok) {
-    proc->wasforked = true;
-    proc->handle = procinfo.hProcess;
-    proc->pid = procinfo.dwProcessId;
+    proc->hProcess = procinfo.hProcess;
+    proc->pid = child_pid;
     __proc_add(proc);
-    return procinfo.dwProcessId;
+    return child_pid;
   } else {
     if (errno != ENOMEM)
       eagain();  // posix fork() only specifies two errors
@@ -380,14 +391,27 @@ textwindows static int sys_fork_nt_parent(uint32_t dwCreationFlags) {
   }
 }
 
-textwindows int sys_fork_nt(uint32_t dwCreationFlags) {
+textwindows int sys_fork_nt(void) {
   int rc;
+  static int child_pid;
+  static intptr_t hStopEvent;
+  atomic_ulong *child_sigpending;
+  if (!(hStopEvent = CreateEvent(&kNtIsInheritable, 1, 0, 0)))  // manual reset
+    return enomem();
+  child_pid = __generate_pid(&child_sigpending);
+  UnmapViewOfFile(child_sigpending);
   __winmain_isfork = true;
-  __winmain_tib = __get_tls();
+  __winmain_tib = __get_tls_win32();
   if (!__builtin_setjmp(__winmain_jmpbuf)) {
-    rc = sys_fork_nt_parent(dwCreationFlags);
+    rc = sys_fork_nt_parent(child_pid, hStopEvent);
+    if (rc == -1)
+      DeleteFile(__sig_process_path(alloca(256), child_pid));
   } else {
     sys_fork_nt_child();
+    __get_pib()->pid = child_pid;
+    __get_pib()->sigpending = __sig_map_process(child_pid, kNtOpenAlways);
+    __get_pib()->hStopEvent = hStopEvent;
+    __get_pib()->hStopChurn = __proc.hStopChurn;
     rc = 0;
   }
   __winmain_isfork = false;

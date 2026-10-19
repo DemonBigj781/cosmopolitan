@@ -53,7 +53,7 @@ static textwindows ssize_t sys_readlinkat_nt_impl(int dirfd, const char *path,
                                                   char *buf, size_t bufsiz) {
 
   char16_t path16[PATH_MAX];
-  if (__mkntpathat(dirfd, path, 0, path16) == -1)
+  if (__mkntpathat(dirfd, path, path16) == -1)
     return -1;
   size_t len = strlen16(path16);
   // [rust-ape] a trailing backslash after a drive colon is structural,

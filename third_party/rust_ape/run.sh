@@ -15,6 +15,7 @@ usage() {
 Usage: third_party/rust_ape/run.sh COMMAND [ARGUMENTS]
 
   setup                  Install the pinned SDK under o/rust-ape.
+  gen-shim               Regenerate ABI tables from the installed runtime headers.
   build PROJECT [ARGS]   Build an APE with upstream xtask (both CPU targets).
   generate PROJECT      Generate a Rust project using the patched SDK.
   cargo [CARGO ARGS]     Run Cargo for the Cosmopolitan target and patched std.
@@ -35,7 +36,7 @@ case "$rust_ape_command" in
     printf 'SDK=%s\nCARGO_HOME=%s\nRUSTUP_HOME=%s\n' "$rust_ape_sdk" \
       "$rust_ape_build/toolchain/cargo" "$rust_ape_build/toolchain/rustup"
     exit 0 ;;
-  setup|build|generate|cargo) ;;
+  setup|build|generate|gen-shim|cargo) ;;
   *) usage >&2; exit 2 ;;
 esac
 

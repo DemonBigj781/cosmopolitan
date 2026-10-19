@@ -24,6 +24,7 @@
 #include "libc/calls/struct/iovec.h"
 #include "libc/calls/struct/sigset.internal.h"
 #include "libc/intrin/fds.h"
+#include "libc/sysv/pib.h"
 #include "libc/nt/struct/iovec.h"
 #include "libc/nt/winsock.h"
 #include "libc/sock/internal.h"
@@ -64,7 +65,7 @@ textwindows ssize_t sys_recvfrom_nt(int fd, const struct iovec *iov,
   if (flags & ~(_MSG_DONTWAIT | _MSG_OOB | _MSG_PEEK))
     return einval();
   ssize_t rc;
-  struct Fd *f = g_fds.p + fd;
+  struct Fd *f = __get_pib()->fds.p + fd;
   sigset_t waitmask = __sig_block();
   // [rust-ape] see the header comment
   bool nonblock = (f->flags & O_NONBLOCK) || (flags & _MSG_DONTWAIT);

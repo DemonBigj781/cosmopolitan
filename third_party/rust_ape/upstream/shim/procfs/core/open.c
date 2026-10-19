@@ -23,6 +23,7 @@
 #include <unistd.h>
 #include <libc/calls/internal.h>
 #include <libc/calls/state.internal.h> // __fds_lock
+#include <libc/sysv/pib.h>
 #include <libc/dce.h>
 #include <libc/nt/files.h>
 #include <libc/runtime/runtime.h>
@@ -65,7 +66,7 @@ static _Atomic(_Atomic(struct memfd *) *) g_memfd[MEMFD_CHUNKS];
 
 static struct memfd *memfd_of(int fd) {
     if (fd < 0 || fd >= MEMFD_CHUNK * MEMFD_CHUNKS) return 0;
-    if ((unsigned)fd >= g_fds.n || g_fds.p[fd].kind != kFdReserved) return 0;
+    if ((unsigned)fd >= __get_pib()->fds.n || __get_pib()->fds.p[fd].kind != kFdReserved) return 0;
     _Atomic(struct memfd *) *c =
         atomic_load_explicit(&g_memfd[fd / MEMFD_CHUNK], memory_order_acquire);
     if (!c) return 0;
@@ -98,10 +99,14 @@ static int claim_slot(void) {
     int fd = fcntl(2, F_DUPFD_CLOEXEC, 3);
     if (fd == -1) fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
     if (fd == -1) return -1;
-    __ensurefds(fd);
     __fds_lock();
-    memset(&g_fds.p[fd], 0, sizeof g_fds.p[fd]);
-    g_fds.p[fd].kind = kFdReserved;
+    if (__ensurefds_unlocked(fd) == -1) {
+        __fds_unlock();
+        close(fd);
+        return -1;
+    }
+    memset(&__get_pib()->fds.p[fd], 0, sizeof __get_pib()->fds.p[fd]);
+    __get_pib()->fds.p[fd].kind = kFdReserved;
     __fds_unlock();
     return fd;
 }
@@ -136,9 +141,9 @@ static int memfd_open(struct pfs_buf *b, int hostflags, const char *vpath) {
         free(m);
         return -2;
     }
-    g_fds.p[fd].flags = hostflags & (O_ACCMODE | O_CLOEXEC);
-    g_fds.p[fd].mode = S_IFREG | 0444;
-    g_fds.p[fd].handle = 0;
+    __get_pib()->fds.p[fd].flags = hostflags & (O_ACCMODE | O_CLOEXEC);
+    __get_pib()->fds.p[fd].mode = S_IFREG | 0444;
+    __get_pib()->fds.p[fd].handle = 0;
     return fd;
 }
 
@@ -153,7 +158,7 @@ int __ape_shim_procfs_memfd_dir(const char *vpath) {
         struct memfd *m = memfd_of(fd);
         m->dir = true;
         m->gen = 1; // never regenerated
-        g_fds.p[fd].mode = S_IFDIR | 0555;
+        __get_pib()->fds.p[fd].mode = S_IFDIR | 0555;
     }
     pthread_mutex_unlock(&pc_lock);
     return fd;
@@ -290,9 +295,9 @@ int __ape_shim_procfs_memfd_fcntl(int fd, int cmd, int arg) {
     struct memfd *m = memfd_of(fd);
     if (!m) return -2;
     switch (cmd) {
-        case F_GETFD: return (g_fds.p[fd].flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
+        case F_GETFD: return (__get_pib()->fds.p[fd].flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
         case F_SETFD:
-            g_fds.p[fd].flags = (g_fds.p[fd].flags & ~O_CLOEXEC) |
+            __get_pib()->fds.p[fd].flags = (__get_pib()->fds.p[fd].flags & ~O_CLOEXEC) |
                                 ((arg & FD_CLOEXEC) ? O_CLOEXEC : 0);
             return 0;
         case F_GETFL: return O_RDONLY;
@@ -457,12 +462,12 @@ static void track_put(int fd, const char *vpath) {
         for (int i = 0; i < NTRACK; i++) atomic_init(&g_track[i].fd, -1);
         g_track_init = true;
     }
-    if ((unsigned)fd >= g_fds.n) return;
+    if ((unsigned)fd >= __get_pib()->fds.n) return;
     struct trackfd *t = pc_track_find(fd);
     if (!t) t = pc_track_find(-1);
     if (!t) return;
     atomic_store_explicit(&t->fd, -1, memory_order_relaxed);
-    t->handle = g_fds.p[fd].handle;
+    t->handle = __get_pib()->fds.p[fd].handle;
     snprintf(t->vpath, sizeof t->vpath, "%s", vpath);
     atomic_store_explicit(&t->fd, fd, memory_order_release);
 }
@@ -471,12 +476,12 @@ static void track_put(int fd, const char *vpath) {
 struct trackfd *pc_track_get(int fd) {
     struct trackfd *t = pc_track_find(fd);
     if (!t) return 0;
-    if ((unsigned)fd >= g_fds.n) return 0;
+    if ((unsigned)fd >= __get_pib()->fds.n) return 0;
     // NT's tree descriptors are real files validated by handle; the memory
     // ones sit in reserved slots holding none.
-    if (g_fds.p[fd].kind == kFdFile
-            ? g_fds.p[fd].handle != t->handle
-            : g_fds.p[fd].kind != kFdReserved || t->handle != 0)
+    if (__get_pib()->fds.p[fd].kind == kFdFile
+            ? __get_pib()->fds.p[fd].handle != t->handle
+            : __get_pib()->fds.p[fd].kind != kFdReserved || t->handle != 0)
         return 0;
     return t;
 }
@@ -497,7 +502,7 @@ void __ape_shim_procfs_track(int fd, const char *vpath) {
     struct node n;
     pc_parse(vpath + 5, &n);
     if (!is_dir_node(&n)) return;
-    if ((unsigned)fd >= g_fds.n) return;
+    if ((unsigned)fd >= __get_pib()->fds.n) return;
     pthread_mutex_lock(&pc_lock);
     track_put(fd, vpath);
     pthread_mutex_unlock(&pc_lock);

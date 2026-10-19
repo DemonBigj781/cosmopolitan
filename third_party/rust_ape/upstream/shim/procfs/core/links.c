@@ -142,10 +142,10 @@ void __ape_shim_procfs_fix_dirent(int fd, struct dirent *e) {
 // directory name is unique to this process and cannot occur on the way to
 // it. Answers in the \\?\ namespace, normalized to slashes.
 static bool fd_phys_path(int fd, char *out, size_t cap) {
-    if (fd < 0 || (size_t)fd >= g_fds.n) return false;
-    if (g_fds.p[fd].kind != kFdFile) return false;
+    if (fd < 0 || (size_t)fd >= __get_pib()->fds.n) return false;
+    if (__get_pib()->fds.p[fd].kind != kFdFile) return false;
     char16_t w[600];
-    uint32_t len = GetFinalPathNameByHandle(g_fds.p[fd].handle, w, 600, 0);
+    uint32_t len = GetFinalPathNameByHandle(__get_pib()->fds.p[fd].handle, w, 600, 0);
     if (!len || len >= 600) return false;
     size_t k = 0;
     for (uint32_t i = 0; i < len && k < cap - 1; i++)

@@ -1,7 +1,11 @@
+// Rust-APE native argv and interpreter suffix handling on the fork ABI.
+// cflags: -D_COSMO_SOURCE
+#include <stdbool.h>
+#include <stdalign.h>
 /*-*- mode:c;indent-tabs-mode:nil;c-basic-offset:2;tab-width:8;coding:utf-8 -*-│
 │ vi: set et ft=c ts=2 sts=2 sw=2 fenc=utf-8                               :vi │
 ╞══════════════════════════════════════════════════════════════════════════════╡
-│ Copyright 2020 Justine Alexandra Roberts Tunney                              │
+│ Copyright 2021 Justine Alexandra Roberts Tunney                              │
 │                                                                              │
 │ Permission to use, copy, modify, and/or distribute this software for         │
 │ any purpose with or without fee is hereby granted, provided that the         │
@@ -16,22 +20,12 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
-// [rust-ape] ntspawn, replacing cosmo 4.0.2's libc.a(ntspawn.o), the
-// CreateProcess backend of execve and posix_spawn on NT. Changes are
-// marked [rust-ape] below. Every failure sets errno, since upstream
-// leaves it stale on several paths and posix_spawn, which returns errno
-// as its result, then reports success with no child. Win32 errors with
-// no errno counterpart become EACCES. The interpreter a shebang names
-// also gets suffix.c's executable-suffix retry.
-//
-// Everything else is a faithful copy. Compiled with -D_COSMO_SOURCE by
-// the linker wrapper. Revisit on toolchain upgrade.
-// cflags: -D_COSMO_SOURCE
-#include <stdbool.h>  // [rust-ape] cosmo's own build has C23 bool
+#include "libc/proc/ntspawn.h"
+#include "libc/assert.h"
 #include "libc/calls/state.internal.h"
 #include "libc/calls/struct/sigset.internal.h"
 #include "libc/calls/syscall_support-nt.internal.h"
-#include "libc/intrin/kprintf.h"
+#include "libc/dce.h"
 #include "libc/intrin/strace.h"
 #include "libc/nt/createfile.h"
 #include "libc/nt/enum/accessmask.h"
@@ -53,84 +47,64 @@
 #include "libc/nt/struct/startupinfoex.h"
 #include "libc/nt/thunk/msabi.h"
 #include "libc/proc/ntspawn.h"
-#include "libc/stdalign.h"
 #include "libc/str/str.h"
+#include "libc/sysv/errfuns.h"
 #include "libc/calls/calls.h"
 #include "libc/calls/struct/stat.h"
 #include "libc/sysv/consts/at.h"
-#include "libc/sysv/errfuns.h"
-#ifdef __x86_64__
-
 int __ape_shim_exe_fallback(int, const char *, char *);
-// [rust-ape] shim/mkntcmdline.c
 size_t __ape_shim_mkntcmdline(char16_t *, char *const[], size_t, bool);
-
-__msabi extern typeof(CloseHandle) *const __imp_CloseHandle;
+#if SupportsWindows()
 
 struct SpawnBlock {
   char16_t path[PATH_MAX];
   char16_t cmdline[32767];
-  char16_t envblock[32767];
+  union {
+    char16_t envblock[32767];
+    char readbuf[4096];
+  };
   char envbuf[32767];
+  char16_t cwd[PATH_MAX];
 };
 
-static textwindows void *ntspawn_malloc(size_t size) {
+textwindows static void *ntspawn_malloc(size_t size) {
   return HeapAlloc(GetProcessHeap(), 0, size);
 }
 
-static textwindows void ntspawn_free(void *ptr) {
+textwindows static void ntspawn_free(void *ptr) {
   HeapFree(GetProcessHeap(), 0, ptr);
 }
 
-static textwindows ssize_t ntspawn_read(intptr_t fh, char *buf, size_t len) {
-  bool ok;
-  uint32_t got;
-  struct NtOverlapped overlap = {.hEvent = CreateEvent(0, 0, 0, 0)};
-  ok = overlap.hEvent &&
-       (ReadFile(fh, buf, len, 0, &overlap) ||
-        GetLastError() == kNtErrorIoPending) &&
-       GetOverlappedResult(fh, &overlap, &got, true);
-  if (overlap.hEvent)
-    __imp_CloseHandle(overlap.hEvent);
-  return ok ? got : -1;
-}
-
-static textwindows int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
+textwindows static int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
 
   // make executable path
-  if (__mkntpathath(a->dirhand, a->prog, 0, sb->path) == -1)
+  if (__mkntpathath(a->dirhand, a->prog, sb->path, false) == -1)
     return -1;
 
   // open executable
-  char *p = sb->envbuf;
-  char *pe = p + sizeof(sb->envbuf);
+  char *p = sb->readbuf;
+  char *pe = p + sizeof(sb->readbuf);
   intptr_t fh = CreateFile(
       sb->path, kNtFileGenericRead,
       kNtFileShareRead | kNtFileShareWrite | kNtFileShareDelete, 0,
       kNtOpenExisting, kNtFileAttributeNormal | kNtFileFlagBackupSemantics, 0);
-  if (fh == -1) {
-    // [rust-ape] upstream left errno untouched here
-    uint32_t err = GetLastError();
-    if (err == kNtErrorSymlinkClassDisabled || err == kNtErrorCantAccessFile)
-      return eacces();
+  if (fh == -1)
     return __winerr();
-  }
-  ssize_t got = ntspawn_read(fh, p, pe - p);
-  __imp_CloseHandle(fh);
+  uint32_t got;
+  bool32 ok = ReadFile(fh, p, pe - p, &got, 0);
+  CloseHandle(fh);
+  if (!ok)
+    return enoexec();
   if (got < 3)
     return enoexec();
   pe = p + got;
 
   // handle shebang
   size_t i = 0;  // represents space of sb->cmdline consumed
-  // [rust-ape] an APE child reads unix paths itself, so its arguments are
-  // passed as given; only a native program gets the "/x/" rewrite. A
-  // script's interpreter is not looked at, and is taken for native.
   bool native = true;
   if (p[0] == 'M' && p[1] == 'Z') {
+    native = !(got >= 8 && (!memcmp(p, "MZqFpD='", 8) || !memcmp(p, "jartsr='", 8)));
     // it's a windows executable
-    native = !(got >= 8 && (!memcmp(p, "MZqFpD='", 8) ||
-                            !memcmp(p, "jartsr='", 8)));
   } else if (p[0] == '#' && p[1] == '!') {
     p += 2;
     // make sure we got a complete first line
@@ -169,8 +143,6 @@ static textwindows int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
     sb->cmdline[i++] = ' ';
     sb->cmdline[i] = 0;
     // setup the true executable path
-    // [rust-ape] the shebang interpreter gets the same executable-suffix
-    // retry as exec itself
     const char *interp = argv[0];
     char magic[PATH_MAX];
     struct stat st;
@@ -178,7 +150,7 @@ static textwindows int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
         fstatat(AT_FDCWD, interp, &st, 0) == -1 &&
         __ape_shim_exe_fallback(AT_FDCWD, interp, magic))
       interp = magic;
-    if (__mkntpathath(a->dirhand, interp, 0, sb->path) == -1)
+    if (__mkntpathath(a->dirhand, interp, sb->path, false) == -1)
       return -1;
   } else {
     // it's something else
@@ -186,15 +158,13 @@ static textwindows int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
   }
 
   // setup arguments and environment
-  if ((i += __ape_shim_mkntcmdline(sb->cmdline + i, a->argv, 32767 - i,
-                                   native)) >= 32767)
+  if ((i += __ape_shim_mkntcmdline(sb->cmdline + i, a->argv, 32767 - i, native)) >= 32767)
     return e2big();
   if (mkntenvblock(sb->envblock, a->envp, a->extravars, sb->envbuf) == -1)
     return -1;
 
   // create attribute list
   // this code won't call malloc in practice
-  bool32 ok;
   void *freeme = 0;
   alignas(16) char memory[128];
   size_t size = sizeof(memory);
@@ -218,6 +188,14 @@ static textwindows int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
         a->dwExplicitHandleCount * sizeof(*a->opt_lpExplicitHandleList), 0, 0);
   }
 
+  // figure out current directory for new process
+  const char16_t *cwd = a->opt_lpCurrentDirectory;
+  if (!cwd) {
+    uint32_t len = GetCurrentDirectory(PATH_MAX, sb->cwd);
+    unassert(len && len < PATH_MAX);
+    cwd = sb->cwd;
+  }
+
   // create the process
   int rc;
   if (ok) {
@@ -232,8 +210,8 @@ static textwindows int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
                             kNtExtendedStartupinfoPresent |
                             kNtInheritParentAffinity |
                             GetPriorityClass(GetCurrentProcess()),
-                        sb->envblock, a->opt_lpCurrentDirectory,
-                        &info.StartupInfo, a->opt_out_lpProcessInformation)) {
+                        sb->envblock, cwd, &info.StartupInfo,
+                        a->opt_out_lpProcessInformation)) {
         rc = 0;
       } else {
         rc = -1;
@@ -243,15 +221,6 @@ static textwindows int ntspawn2(struct NtSpawnArgs *a, struct SpawnBlock *sb) {
         } else if (GetLastError() == kNtErrorInvalidName) {
           enoent();
         } else {
-          // [rust-ape] every failure carries an errno
-          // fixme: print a debug information for catching a EBADF bug
-          if (GetLastError() == kNtErrorInvalidHandle ||
-              GetLastError() == kNtErrorInvalidParameter)
-            kprintf("[rust-ape] ntspawn: CreateProcess win32=%u handles=%u "
-                    "stdio=%ld,%ld,%ld parent=%ld\n",
-                    GetLastError(), a->dwExplicitHandleCount,
-                    a->lpStartupInfo->hStdInput, a->lpStartupInfo->hStdOutput,
-                    a->lpStartupInfo->hStdError, a->opt_hParentProcess);
           __winerr();
         }
       }
@@ -297,7 +266,7 @@ textwindows int ntspawn(struct NtSpawnArgs *args) {
     rc = ntspawn2(args, sb);
     ntspawn_free(sb);
   } else {
-    rc = enomem();  // [rust-ape]
+    rc = enomem();
   }
   ALLOW_SIGNALS;
   return rc;

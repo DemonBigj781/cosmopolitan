@@ -71,7 +71,7 @@ static int posix_rename_nt(int olddirfd, const char *oldpath, int newdirfd,
             m->oldpath16, kNtDelete | kNtSynchronize,
             kNtFileShareRead | kNtFileShareWrite | kNtFileShareDelete, NULL,
             kNtOpenExisting, kNtFileFlagBackupSemantics, 0);
-        if (h != kNtInvalidHandleValue) {
+        if (h != -1) {
             size_t n = 0;
             while (m->newpath16[n]) n++;
             m->info.Replace = kNtFileRenameFlagReplaceIfExists |
