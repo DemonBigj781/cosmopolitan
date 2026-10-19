@@ -41,9 +41,20 @@ headers, runtime and loader into the SDK before Rust compilation. Then run
 `third_party/rust_ape/run.sh gen-shim` to regenerate constant tables against
 those headers. The adapted shims are not compatible with the stock 4.0.2
 runtime. The Code build driver performs these stages and checks every shim
-before compiling Code; source-runtime Linux/Windows validation is in progress.
+before compiling Code.
 
-For a new executable project under the build directory:
+Source revision `8b8a1532359ff4ca141d2cacaf50dd0289f24c87` was validated by
+`DemonBigj781/code-mod` workflow run `39220804356`: the identical Rust runtime
+probe passed file, thread, and captured-child-output checks on Linux and Windows,
+plus native child exit-code checks on Windows. Code's Linux suites and the
+identical Code artifact's Windows startup/history-worker checks passed. This
+evidence covers the x86-64
+Code runtime profile, not ARM64, GPU computation, or full Windows sandbox parity.
+
+For a new executable project under the build directory, the upstream commands
+below require matching source-built runtimes for both architectures. Code's
+validated profile installs x86-64 only; the dual-architecture build also needs
+a separately prepared source-built ARM64 runtime:
 
 ```sh
 third_party/rust_ape/run.sh generate "$PWD/o/rust-ape/hello"
