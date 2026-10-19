@@ -7,5 +7,6 @@ Snapshot: all tracked files, without Git metadata
 Local integration: run.sh, stage.py, prepare.py and README.cosmo.
 The snapshot now carries source-runtime adaptations in shim/ and the linker
 wrapper. Windows descriptor/process/path overrides target this fork's ABI;
-allocator, open and sync-flag overrides superseded by the fork were removed.
+allocator, open, sync-flag and diagnostic-only descriptor overrides superseded
+by the fork were removed.
 Regenerate shim/tables.h with gen-shim after installing source-built headers.

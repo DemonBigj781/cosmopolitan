@@ -18,7 +18,7 @@ class SourceRuntimeTests(unittest.TestCase):
                 self.assertNotIn("g_fds.", path.read_text())
 
     def test_superseded_overrides_are_removed_not_disabled(self):
-        for name in ("createfileflags.c", "dlmalloc.c", "open-nt.c", "close-nt.c"):
+        for name in ("createfileflags.c", "dlmalloc.c", "open-nt.c", "close-nt.c", "describefds.c"):
             self.assertFalse((SHIM / name).exists())
         self.assertIn("__isthreaded >= 2", (ROOT / "third_party/dlmalloc/locks.inc").read_text())
         self.assertIn("kNtFileFlagWriteThrough", (ROOT / "libc/calls/createfileflags.c").read_text())
@@ -53,6 +53,12 @@ class SourceRuntimeTests(unittest.TestCase):
         self.assertNotIn("int dladdr(", (ROOT / "libc/dlopen/stubs.c").read_text())
         self.assertIn("int dladdr(", (ROOT / "libc/dlopen/dladdr.c").read_text())
         self.assertIn("void *dlopen(", (ROOT / "libc/dlopen/stubs.c").read_text())
+
+    def test_descriptor_handoff_uses_the_runtime_extra_handles_contract(self):
+        self.assertFalse((SHIM / "describefds.c").exists())
+        source = (ROOT / "libc/proc/describefds.c").read_text()
+        self.assertIn("long *opt_inout_lpExtraHandles", source)
+        self.assertIn("__undescribe_fds(envstr.p, hCreatorProcess, handles.p, handles.n)", source)
 
 
 if __name__ == "__main__":
