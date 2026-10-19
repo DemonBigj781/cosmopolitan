@@ -1,11 +1,8 @@
 // dladdr for the Linux-personality shim.
 //
-// cosmo's dlfcn has no dladdr, so the libc crate's `dladdr` lands
-// on the linker as an undefined symbol.
-//
-// This defines the real name rather than an __ape_shim_* redirect, because
-// there is no cosmo function to redirect to -- the same situation as
-// stack_chk.c, filling a hole instead of translating across one.
+// This replaces the fork's address-lookup stub, which is isolated in its
+// own archive member. Other dynamic-loader entry points keep their normal
+// runtime behavior and can be linked alongside this implementation.
 //
 // On Linux the answer comes from /proc/self/maps: the mapping that contains
 // the address names the file it was mapped from (dli_fname). dli_fbase is

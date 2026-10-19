@@ -49,6 +49,11 @@ class SourceRuntimeTests(unittest.TestCase):
         self.assertIn("return sys_chdir_nt16(dir, len)", source)
         self.assertIn("int sys_chdir_nt16(", (ROOT / "libc/calls/chdir-nt.c").read_text())
 
+    def test_dladdr_is_independent_of_other_loader_stubs(self):
+        self.assertNotIn("int dladdr(", (ROOT / "libc/dlopen/stubs.c").read_text())
+        self.assertIn("int dladdr(", (ROOT / "libc/dlopen/dladdr.c").read_text())
+        self.assertIn("void *dlopen(", (ROOT / "libc/dlopen/stubs.c").read_text())
+
 
 if __name__ == "__main__":
     unittest.main()
