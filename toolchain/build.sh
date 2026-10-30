@@ -12,7 +12,7 @@ if [ -z "$CC" ]; then
 fi
 mkdir -p o/toolchain
 COSMO_MAKE="${COSMO_MAKE:-make}"
-LUA_DEPS=$(COSMO_MAKE="$COSMO_MAKE" sh toolchain/prepare-lua.sh)
+LUA_DEPS=$(COSMOCC="$CC" COSMO_MAKE="$COSMO_MAKE" sh toolchain/prepare-lua.sh)
 "$CC" -O2 -c toolchain/ape_toolchain.c -o o/toolchain/ape_toolchain.o
 # shellcheck disable=SC2086
 TOOLCHAIN_OBJECTS="o/toolchain/ape_toolchain.o o//toolchain/lua_entry.o" \

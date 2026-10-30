@@ -33,7 +33,7 @@ fi
 # Use Cosmopolitan's own archive rules instead of compiling sources ad hoc.
 # The archives include the SIMD and header configuration needed by this fork.
 COSMO_MAKE="${COSMO_MAKE:-make}"
-LUA_DEPS=$(COSMO_MAKE="$COSMO_MAKE" sh toolchain/prepare-lua.sh)
+LUA_DEPS=$(COSMOCC="$COSMOCC" COSMO_MAKE="$COSMO_MAKE" sh toolchain/prepare-lua.sh)
 # shellcheck disable=SC2086
 MACHIN_ARM_OBJECT=""
 if [[ -n "$MACHIN_OBJECT" ]]; then

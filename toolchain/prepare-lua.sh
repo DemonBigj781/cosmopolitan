@@ -2,6 +2,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 COSMO_MAKE="${COSMO_MAKE:-make}"
+: "${COSMOCC:?Set COSMOCC to a Cosmopolitan compiler}"
 
 LUA_DEPS=$("$COSMO_MAKE" -s -f Makefile -f toolchain/lua-link.mk \
   toolchain-lua-link MODE=)
@@ -21,12 +22,11 @@ ensure_archive_members() {
   fi
 }
 
-# Build both architecture closures and the wrapper with Cosmopolitan's normal
-# object rules. The resulting x86-64 paths are the link arguments printed below.
+# Build both architecture closures with Cosmopolitan's normal archive rules.
 # shellcheck disable=SC2086
-"$COSMO_MAKE" -s -j1 $LUA_DEPS o//toolchain/lua_entry.o
+"$COSMO_MAKE" -s -j1 $LUA_DEPS
 # shellcheck disable=SC2086
-"$COSMO_MAKE" -s -j1 $ARM_LUA_DEPS o/aarch64/toolchain/lua_entry.o
+"$COSMO_MAKE" -s -j1 $ARM_LUA_DEPS
 
 # A stale empty archive can be considered up to date by make after an
 # interrupted or partial cross-architecture build. It omits startup objects
@@ -48,6 +48,8 @@ for archive in $LUA_DEPS; do
   cp "$arm_archive" "$companion"
 done
 
-mkdir -p o/toolchain/.aarch64
-cp o/aarch64/toolchain/lua_entry.o o/toolchain/.aarch64/lua_entry.o
+mkdir -p o/toolchain
+"$COSMOCC" -O2 -c toolchain/lua_entry.c -o o/toolchain/lua_entry.o
+test -s o/toolchain/lua_entry.o
+test -s o/toolchain/.aarch64/lua_entry.o
 printf '%s\n' "$LUA_DEPS"
