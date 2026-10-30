@@ -35,10 +35,14 @@ class BuildRecipeTest(unittest.TestCase):
         ):
             with self.subTest(name=name):
                 self.assertIn(name, script)
-        self.assertIn(
+        package_makefile = PACKAGE_MAKEFILE.read_text()
+        for flag in (
             "-Dmain=machin_entry",
-            PACKAGE_MAKEFILE.read_text(),
-        )
+            "-Wno-misleading-indentation",
+            "-Wno-unused-variable",
+        ):
+            with self.subTest(flag=flag):
+                self.assertIn(flag, package_makefile)
 
 
 if __name__ == "__main__":
