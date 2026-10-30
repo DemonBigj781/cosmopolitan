@@ -8,6 +8,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_SCRIPT = ROOT / "toolchain/package-compiler-sdk.sh"
 PACKAGE_MAKEFILE = ROOT / "toolchain/package-objects.mk"
+MACHIN_LINK_SCRIPT = ROOT / "toolchain/machin-link.sh"
 
 
 class BuildRecipeTest(unittest.TestCase):
@@ -43,6 +44,39 @@ class BuildRecipeTest(unittest.TestCase):
         ):
             with self.subTest(flag=flag):
                 self.assertIn(flag, package_makefile)
+
+    def test_generated_machin_sources_are_available_to_arm_make(self):
+        package_makefile = PACKAGE_MAKEFILE.read_text()
+
+        for name in ("compiler", "machin_demo"):
+            with self.subTest(name=name):
+                self.assertIn(
+                    f"o/aarch64/toolchain/{name}.c: o//toolchain/{name}.c",
+                    package_makefile,
+                )
+
+    def test_machin_link_uses_repository_make_for_both_architectures(self):
+        script = MACHIN_LINK_SCRIPT.read_text()
+
+        self.assertNotRegex(script, re.compile(r'"\$COSMOCC"[^\n]*\s-c\s'))
+        self.assertIn(
+            '"$COSMO_MAKE" -s -j1 -f Makefile '
+            '-f toolchain/package-objects.mk MODE=',
+            script,
+        )
+        self.assertIn(
+            '"$COSMO_MAKE" -s -j1 -f Makefile '
+            '-f toolchain/package-objects.mk MODE=aarch64',
+            script,
+        )
+        for path in (
+            "o//toolchain/ape_toolchain.o",
+            "o//toolchain/machin_demo.o",
+            "o/aarch64/toolchain/ape_toolchain.o",
+            "o/aarch64/toolchain/machin_demo.o",
+        ):
+            with self.subTest(path=path):
+                self.assertIn(path, script)
 
 
 if __name__ == "__main__":

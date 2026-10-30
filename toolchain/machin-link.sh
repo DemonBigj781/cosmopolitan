@@ -8,10 +8,16 @@ mkdir -p o/toolchain
 test -s o/toolchain/machin_demo.c
 COSMO_MAKE="${COSMO_MAKE:-make}"
 LUA_DEPS=$(COSMO_MAKE="$COSMO_MAKE" sh toolchain/prepare-lua.sh)
-"$COSMOCC" -O2 -Dmain=machin_entry -c o/toolchain/machin_demo.c -o o/toolchain/machin_demo.o
-"$COSMOCC" -O2 -c toolchain/ape_toolchain.c -o o/toolchain/ape_toolchain.o
+"$COSMO_MAKE" -s -j1 -f Makefile -f toolchain/package-objects.mk MODE= \
+  o//toolchain/ape_toolchain.o o//toolchain/machin_demo.o
+"$COSMO_MAKE" -s -j1 -f Makefile -f toolchain/package-objects.mk MODE=aarch64 \
+  o/aarch64/toolchain/ape_toolchain.o o/aarch64/toolchain/machin_demo.o
+mkdir -p o/toolchain/.aarch64
+for object in o/aarch64/toolchain/ape_toolchain.o o/aarch64/toolchain/machin_demo.o; do
+  cp "$object" "o/toolchain/.aarch64/${object##*/}"
+done
 # shellcheck disable=SC2086
-TOOLCHAIN_OBJECTS="o/toolchain/ape_toolchain.o o/toolchain/machin_demo.o o//toolchain/lua_entry.o" \
+TOOLCHAIN_OBJECTS="o//toolchain/ape_toolchain.o o//toolchain/machin_demo.o o//toolchain/lua_entry.o" \
 TOOLCHAIN_ARM_OBJECTS="o/toolchain/.aarch64/ape_toolchain.o o/toolchain/.aarch64/machin_demo.o o/toolchain/.aarch64/lua_entry.o" \
 TOOLCHAIN_DEPS="$LUA_DEPS" COSMOCC="$COSMOCC" COSMO_MAKE="$COSMO_MAKE" \
   sh toolchain/link-unified-ape.sh o/toolchain/toolchain.com
