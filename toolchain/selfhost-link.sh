@@ -14,11 +14,17 @@ test -s o/toolchain/compiler.mfl
 test -s o/toolchain/compiler.c
 COSMO_MAKE="${COSMO_MAKE:-make}"
 LUA_DEPS=$(COSMO_MAKE="$COSMO_MAKE" sh toolchain/prepare-lua.sh)
-"$COSMOCC" -O2 -std=c11 -pthread -Dmain=machin_entry -c o/toolchain/compiler.c -o o/toolchain/compiler.o
-"$COSMOCC" -O2 -c toolchain/ape_toolchain.c -o o/toolchain/dispatcher.o
+"$COSMO_MAKE" -s -j1 -f Makefile -f toolchain/package-objects.mk MODE= \
+  o//toolchain/ape_toolchain.o o//toolchain/compiler.o
+"$COSMO_MAKE" -s -j1 -f Makefile -f toolchain/package-objects.mk MODE=aarch64 \
+  o/aarch64/toolchain/ape_toolchain.o o/aarch64/toolchain/compiler.o
+mkdir -p o/toolchain/.aarch64
+for object in o/aarch64/toolchain/ape_toolchain.o o/aarch64/toolchain/compiler.o; do
+  cp "$object" "o/toolchain/.aarch64/${object##*/}"
+done
 # shellcheck disable=SC2086
-TOOLCHAIN_OBJECTS="o/toolchain/dispatcher.o o/toolchain/compiler.o o//toolchain/lua_entry.o" \
-TOOLCHAIN_ARM_OBJECTS="o/toolchain/.aarch64/dispatcher.o o/toolchain/.aarch64/compiler.o o/toolchain/.aarch64/lua_entry.o" \
+TOOLCHAIN_OBJECTS="o//toolchain/ape_toolchain.o o//toolchain/compiler.o o//toolchain/lua_entry.o" \
+TOOLCHAIN_ARM_OBJECTS="o/toolchain/.aarch64/ape_toolchain.o o/toolchain/.aarch64/compiler.o o/toolchain/.aarch64/lua_entry.o" \
 TOOLCHAIN_DEPS="$LUA_DEPS" COSMOCC="$COSMOCC" COSMO_MAKE="$COSMO_MAKE" \
   sh toolchain/link-unified-ape.sh o/toolchain/toolchain.com
 o/toolchain/toolchain.com selftest

@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_SCRIPT = ROOT / "toolchain/package-compiler-sdk.sh"
 PACKAGE_MAKEFILE = ROOT / "toolchain/package-objects.mk"
 MACHIN_LINK_SCRIPT = ROOT / "toolchain/machin-link.sh"
+SELFHOST_LINK_SCRIPT = ROOT / "toolchain/selfhost-link.sh"
 
 
 class BuildRecipeTest(unittest.TestCase):
@@ -74,6 +75,29 @@ class BuildRecipeTest(unittest.TestCase):
             "o//toolchain/machin_demo.o",
             "o/aarch64/toolchain/ape_toolchain.o",
             "o/aarch64/toolchain/machin_demo.o",
+        ):
+            with self.subTest(path=path):
+                self.assertIn(path, script)
+
+    def test_selfhost_link_uses_repository_make_for_both_architectures(self):
+        script = SELFHOST_LINK_SCRIPT.read_text()
+
+        self.assertNotRegex(script, re.compile(r'"\$COSMOCC"[^\n]*\s-c\s'))
+        self.assertIn(
+            '"$COSMO_MAKE" -s -j1 -f Makefile '
+            '-f toolchain/package-objects.mk MODE=',
+            script,
+        )
+        self.assertIn(
+            '"$COSMO_MAKE" -s -j1 -f Makefile '
+            '-f toolchain/package-objects.mk MODE=aarch64',
+            script,
+        )
+        for path in (
+            "o//toolchain/ape_toolchain.o",
+            "o//toolchain/compiler.o",
+            "o/aarch64/toolchain/ape_toolchain.o",
+            "o/aarch64/toolchain/compiler.o",
         ):
             with self.subTest(path=path):
                 self.assertIn(path, script)
