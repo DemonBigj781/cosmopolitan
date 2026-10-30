@@ -149,7 +149,7 @@ done:
 }
 static void stop_windows_sccache(const char *path) {
   char *args[]={"sh.exe","-c",
-    WINDOWS_SHELL_RESET "\"$0\" \"$@\"; result=$?; exit \"$result\"",
+    WINDOWS_SHELL_RESET "\"$0\" \"$@\" >/dev/null 2>&1; result=$?; exit \"$result\"",
     (char*)path,"--stop-server",NULL};
   (void)run_external(args);
 }

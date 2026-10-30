@@ -306,6 +306,7 @@ class SdkDriverTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.count("exec=sh.exe\n"), 2)
         self.assertIn("arg=--stop-server\n", result.stdout)
+        self.assertIn(">/dev/null 2>&1", result.stdout)
 
     def test_windows_cargo_does_not_stop_a_caller_owned_wrapper(self):
         host = "x86_64-pc-windows-msvc"
