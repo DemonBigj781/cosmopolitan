@@ -60,7 +60,8 @@ static int safe(const char *s){
   for(const char *p=s;*p;){
     const char *q=strchr(p,'/');size_t n=q?(size_t)(q-p):strlen(p);
     if(!n||(n==1&&p[0]=='.')||(n==2&&p[0]=='.'&&p[1]=='.'))return 0;
-    if(!q)break;p=q+1;
+    if(!q)break;
+    p=q+1;
     if(!*p)break;
   }
   return 1;

@@ -34,7 +34,8 @@ class SdkPackagingTest(unittest.TestCase):
         # One compiler invocation, no parallel build workers.
         subprocess.run(
             shlex.split(os.environ.get("CC", "cc"))
-            + ["-O0", "-Werror=multichar", "-I", str(ROOT),
+            + ["-O0", "-Werror=multichar", "-Werror=misleading-indentation",
+               "-I", str(ROOT),
                str(ROOT / "toolchain/tests/extract_sdk_test.c"),
                "-lz", "-o", str(cls.extractor)],
             check=True,
