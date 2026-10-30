@@ -49,7 +49,7 @@ for archive in $LUA_DEPS; do
 done
 
 mkdir -p o/toolchain
-"$COSMOCC" -O2 -c toolchain/lua_entry.c -o o/toolchain/lua_entry.o
+"$COSMOCC" -O2 -iquote. -c toolchain/lua_entry.c -o o/toolchain/lua_entry.o
 test -s o/toolchain/lua_entry.o
 test -s o/toolchain/.aarch64/lua_entry.o
 printf '%s\n' "$LUA_DEPS"
