@@ -147,6 +147,12 @@ done:
   free(args);
   return rc;
 }
+static void stop_windows_sccache(const char *path) {
+  char *args[]={"sh.exe","-c",
+    WINDOWS_SHELL_RESET "\"$0\" \"$@\"; result=$?; exit \"$result\"",
+    (char*)path,"--stop-server",NULL};
+  (void)run_external(args);
+}
 static int rust_source_available(void) {
   static const char expected[]="Rust-APE source snapshot;";
   char marker[sizeof(expected)-1];
@@ -308,6 +314,8 @@ int embedded_sdk_main(int argc,char **argv) {
       return 2;
     }
     int is_cargo=!strcmp(argv[2],"cargo");
+    int owns_sccache=0;
+    char packaged_sccache[4096];
     if (is_sccache) {
       char sccache_path[4096];
       if(snprintf(sccache_path,sizeof(sccache_path),"%s/bin/sccache%s",sysroot,IsWindows()?".exe":"")>=(int)sizeof(sccache_path) ||
@@ -341,10 +349,12 @@ int embedded_sdk_main(int argc,char **argv) {
         perror("set packaged Rust tools");return 1;
       }
       if(!getenv("RUSTC_WRAPPER")) {
-        char sccache_path[4096];
-        if(snprintf(sccache_path,sizeof(sccache_path),"%s/bin/sccache%s",sysroot,IsWindows()?".exe":"")<(int)sizeof(sccache_path) &&
-           !access(sccache_path,X_OK) && setenv("RUSTC_WRAPPER",sccache_path,1)) {
-          perror("set packaged sccache wrapper");return 1;
+        if(snprintf(packaged_sccache,sizeof(packaged_sccache),"%s/bin/sccache%s",sysroot,IsWindows()?".exe":"")<(int)sizeof(packaged_sccache) &&
+           !access(packaged_sccache,X_OK)) {
+          if(setenv("RUSTC_WRAPPER",packaged_sccache,1)) {
+            perror("set packaged sccache wrapper");return 1;
+          }
+          owns_sccache=1;
         }
       }
     }
@@ -366,6 +376,7 @@ int embedded_sdk_main(int argc,char **argv) {
     for(int i=3;i<argc;i++)rargs[n++]=argv[i];
     rargs[n]=NULL;
     rc=run_external(rargs);
+    if(IsWindows() && owns_sccache)stop_windows_sccache(packaged_sccache);
     free(rargs);
     return rc;
   }

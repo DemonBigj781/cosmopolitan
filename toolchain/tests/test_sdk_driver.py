@@ -297,6 +297,26 @@ class SdkDriverTest(unittest.TestCase):
                 self.assertIn("/bin/rustc.exe", result.stdout)
                 self.assertIn("/bin/rustdoc.exe", result.stdout)
 
+    def test_windows_cargo_stops_its_packaged_sccache_server(self):
+        host = "x86_64-pc-windows-msvc"
+        self.add_host(host)
+
+        result = self.run_driver("rust", "cargo", "check", system="Windows")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("exec=sh.exe\n"), 2)
+        self.assertIn("arg=--stop-server\n", result.stdout)
+
+    def test_windows_cargo_does_not_stop_a_caller_owned_wrapper(self):
+        host = "x86_64-pc-windows-msvc"
+        self.add_host(host)
+
+        result = self.run_driver("rust", "cargo", "check", system="Windows",
+                                 extra_env={"RUSTC_WRAPPER": "/caller/wrapper"})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("arg=--stop-server\n", result.stdout)
+
     def test_windows_node_uses_exe_and_waits_through_native_shell_boundary(self):
         host = "x86_64-pc-windows-msvc"
         self.add_node_host(host)
