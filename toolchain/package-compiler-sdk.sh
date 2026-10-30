@@ -6,14 +6,11 @@ cd "$(dirname "$0")/.."
 : "${COSMOCC:?Set COSMOCC to compiler binary}"
 test -x "$COSMOCC_ROOT/bin/zipcopy" || { echo "Cosmopolitan zipcopy missing from SDK" >&2; exit 1; }
 mkdir -p o/toolchain
-"$COSMOCC" -O2 -c toolchain/ape_toolchain.c -o o/toolchain/dispatcher-embed.o
-"$COSMOCC" -O2 -c toolchain/embedded-sdk-driver.c -o o/toolchain/sdk-driver.o
-"$COSMOCC" -O2 -c toolchain/native_zip.c -I. -o o/toolchain/native-zip.o
-"$COSMOCC" -O2 -c toolchain/machin_build.c -o o/toolchain/machin-build.o
-"$COSMOCC" -O2 -c toolchain/rust_build.c -o o/toolchain/rust-build.o
-"$COSMOCC" -O2 -c toolchain/tempdir.c -o o/toolchain/tempdir.o
+COSMO_MAKE="${COSMO_MAKE:-make}"
 # Optional self-hosted Machin compiler linked into the SAME APE.
-if [[ -n "${MACHIN_OBJECT:-}" ]]; then
+MACHIN_OBJECT="${MACHIN_OBJECT:-}"
+BUILD_MACHIN_OBJECT=false
+if [[ -n "$MACHIN_OBJECT" ]]; then
   test -f "$MACHIN_OBJECT"
 elif [[ -n "${MACHIN:-}" && -n "${MACHIN_SRC:-}" ]]; then
   sources=(selfhost/lex.src selfhost/parse.src selfhost/check.src
@@ -25,22 +22,44 @@ elif [[ -n "${MACHIN:-}" && -n "${MACHIN_SRC:-}" ]]; then
   test -s o/toolchain/compiler.mfl
   "$MACHIN" build o/toolchain/compiler.mfl --emit-c > o/toolchain/compiler.c
   test -s o/toolchain/compiler.c
-  "$COSMOCC" -O2 -std=c11 -pthread -Dmain=machin_entry -c o/toolchain/compiler.c -o o/toolchain/compiler.o
-  MACHIN_OBJECT=o/toolchain/compiler.o
-else
-  MACHIN_OBJECT=""
+  BUILD_MACHIN_OBJECT=true
+fi
+# Compile every object that links against repository-built archives with the
+# same repository compiler, flags, headers, and ABI for each architecture.
+object_names=(ape_toolchain embedded-sdk-driver native_zip machin_build rust_build tempdir)
+x86_objects=()
+arm_objects=()
+arm_companion_objects=()
+for name in "${object_names[@]}"; do
+  x86_objects+=("o//toolchain/$name.o")
+  arm_objects+=("o/aarch64/toolchain/$name.o")
+  arm_companion_objects+=("o/toolchain/.aarch64/$name.o")
+done
+x86_targets=("${x86_objects[@]}")
+arm_targets=("${arm_objects[@]}")
+if [[ "$BUILD_MACHIN_OBJECT" == true ]]; then
+  x86_targets+=(o//toolchain/compiler.o)
+  arm_targets+=(o/aarch64/toolchain/compiler.o)
+fi
+"$COSMO_MAKE" -s -j1 -f Makefile -f toolchain/package-objects.mk MODE= "${x86_targets[@]}"
+"$COSMO_MAKE" -s -j1 -f Makefile -f toolchain/package-objects.mk MODE=aarch64 "${arm_targets[@]}"
+mkdir -p o/toolchain/.aarch64
+for object in "${arm_targets[@]}"; do
+  cp "$object" "o/toolchain/.aarch64/${object##*/}"
+done
+if [[ "$BUILD_MACHIN_OBJECT" == true ]]; then
+  MACHIN_OBJECT=o//toolchain/compiler.o
 fi
 # Use Cosmopolitan's own archive rules instead of compiling sources ad hoc.
 # The archives include the SIMD and header configuration needed by this fork.
-COSMO_MAKE="${COSMO_MAKE:-make}"
-LUA_DEPS=$(COSMOCC="$COSMOCC" COSMO_MAKE="$COSMO_MAKE" sh toolchain/prepare-lua.sh)
+LUA_DEPS=$(COSMO_MAKE="$COSMO_MAKE" sh toolchain/prepare-lua.sh)
 # shellcheck disable=SC2086
 MACHIN_ARM_OBJECT=""
 if [[ -n "$MACHIN_OBJECT" ]]; then
   MACHIN_ARM_OBJECT="${MACHIN_OBJECT%/*}/.aarch64/${MACHIN_OBJECT##*/}"
 fi
-TOOLCHAIN_OBJECTS="o/toolchain/dispatcher-embed.o o/toolchain/sdk-driver.o o/toolchain/native-zip.o o/toolchain/machin-build.o o/toolchain/rust-build.o o/toolchain/tempdir.o o//toolchain/lua_entry.o ${MACHIN_OBJECT}"
-TOOLCHAIN_ARM_OBJECTS="o/toolchain/.aarch64/dispatcher-embed.o o/toolchain/.aarch64/sdk-driver.o o/toolchain/.aarch64/native-zip.o o/toolchain/.aarch64/machin-build.o o/toolchain/.aarch64/rust-build.o o/toolchain/.aarch64/tempdir.o o/toolchain/.aarch64/lua_entry.o ${MACHIN_ARM_OBJECT}"
+TOOLCHAIN_OBJECTS="${x86_objects[*]} o//toolchain/lua_entry.o ${MACHIN_OBJECT}"
+TOOLCHAIN_ARM_OBJECTS="${arm_companion_objects[*]} o/toolchain/.aarch64/lua_entry.o ${MACHIN_ARM_OBJECT}"
 TOOLCHAIN_DEPS="$LUA_DEPS"
 export TOOLCHAIN_OBJECTS TOOLCHAIN_ARM_OBJECTS TOOLCHAIN_DEPS COSMOCC COSMO_MAKE
 sh toolchain/link-unified-ape.sh o/toolchain/toolchain.com
