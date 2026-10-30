@@ -6,6 +6,7 @@ extern int rust_build_main(int argc, char **argv) __attribute__((weak));
 extern int embedded_sdk_main(int argc, char **argv) __attribute__((weak));
 extern int embedded_sdk_cleanup(void) __attribute__((weak));
 extern int machin_entry(int argc, char **argv) __attribute__((weak));
+extern int lua_entry(int argc, char **argv) __attribute__((weak));
 
 static void usage(const char *name) {
   printf("Cosmopolitan unified APE toolchain (bootstrap)\n");
@@ -15,13 +16,16 @@ static void usage(const char *name) {
   puts("  c++          Compile and link C++ with packaged libcxx headers/runtime");
   puts("  rust status  Verify embedded Rust-APE resources");
   puts("  rust rustc  Run packaged Rust compiler");
+  puts("  rust sccache  Run packaged native sccache wrapper");
   puts("  rust build input.rs -o output.com  Build no_std Rust APE (rust_main entry)");
+  puts("  node [args]  Run packaged native Node.js for this host");
   puts("  machin-compiler  Run linked self-hosted Machin compiler");
   puts("  machin-demo  Run statically linked Machin sample (when available)");
+  puts("  lua           Run the embedded Cosmopolitan Lua interpreter");
   puts("  version       Show bootstrap version");
   puts("  selftest      Verify command dispatch");
   puts("  machin build input.mfl -o output.com  Compile directly into an APE");
-  puts("  cache         Reserved for sccache integration");
+  puts("  cache         Reserved for future cache policy integration");
   puts("  shell         Reserved for xshell integration");
   puts("  devices       Reserved for WebGPU/CPU discovery");
 }
@@ -35,11 +39,16 @@ static int dispatch(int argc, char **argv) {
     if (!machin_entry) { fputs("Machin module not linked\\n", stderr); return 2; }
     return machin_entry(argc - 1, argv + 1);
   }
+  if (!strcmp(argv[1], "lua")) {
+    if (!lua_entry) { fputs("Lua module not linked\\n", stderr); return 2; }
+    return lua_entry(argc - 1, argv + 1);
+  }
   if (!strcmp(argv[1], "rust") && argc > 2 && !strcmp(argv[2], "build")) {
     if (!rust_build_main) { fputs("Rust build driver not linked\\n", stderr); return 2; }
     return rust_build_main(argc, argv);
   }
-  if (!strcmp(argv[1], "cc") || !strcmp(argv[1], "c++") || !strcmp(argv[1], "rust")) {
+  if (!strcmp(argv[1], "cc") || !strcmp(argv[1], "c++") ||
+      !strcmp(argv[1], "rust") || !strcmp(argv[1], "node")) {
     if (!embedded_sdk_main) { fputs("Embedded SDK driver not linked\\n", stderr); return 2; }
     return embedded_sdk_main(argc, argv);
   }

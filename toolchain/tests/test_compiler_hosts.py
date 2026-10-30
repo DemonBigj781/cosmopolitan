@@ -22,7 +22,8 @@ class CompilerHostsTest(unittest.TestCase):
         self.binary.write_bytes(b"fixture")
         (self.root / "BUILD.json").write_text(json.dumps({
             "source_commit": "1" * 40, "artifact": {"sha256": sha256(self.binary)},
-            "inputs": {"rust_compiler": {"hosts": list(RUST_HOSTS)}}}))
+            "inputs": {"rust_compiler": {"hosts": list(RUST_HOSTS)},
+                       "nodejs": {"hosts": list(RUST_HOSTS)}}}))
 
     def check(self, failure=None, system="Linux", arch="x86_64", unsupported_message=None):
         def run(command, **kwargs):
@@ -34,6 +35,7 @@ class CompilerHostsTest(unittest.TestCase):
             if command[-1] == "status": text = "Resource access: ZIPOS"
             if "--full" in command: text = "int main(int argc, char** argv) {return 0;}"
             if command[-1] == "--version": text = "compiler version"
+            if command[-1] == "6 * 7": text = "42"
             kwargs["stdout"].write(text + "\n")
             return subprocess.CompletedProcess(command, 0)
         def probe(binary, language, output, loader):
@@ -64,7 +66,7 @@ class CompilerHostsTest(unittest.TestCase):
     def test_launch_and_compile_results_are_separate(self):
         result, _ = self.check()
         self.assertTrue(result["passed"])
-        self.assertEqual(len(result["launcher"]), 7)
+        self.assertEqual(len(result["launcher"]), 8)
         self.assertEqual(len(result["compilers"]), 4)
 
     def test_macos_rust_must_build_successfully_now(self):
@@ -76,6 +78,7 @@ class CompilerHostsTest(unittest.TestCase):
         self.assertTrue(rust["supported"])
         self.assertNotIn("rejection_validated", rust)
         self.assertEqual(result["rust_compiler_host"], "aarch64-apple-darwin")
+        self.assertEqual(result["nodejs_host"], "aarch64-apple-darwin")
 
     def test_other_errors_are_not_disguised_as_expected_rust_rejections(self):
         result, _ = self.check(system="Darwin", unsupported_message="unexpected compiler crash")
@@ -92,6 +95,15 @@ class CompilerHostsTest(unittest.TestCase):
         (self.root / "BUILD.json").write_text(json.dumps(manifest))
         result, calls = self.check(system="Darwin", arch="aarch64")
         self.assertFalse(result["passed"])
+        calls.assert_not_called()
+
+    def test_missing_nodejs_host_payload_fails_before_compilers(self):
+        manifest = json.loads((self.root / "BUILD.json").read_text())
+        manifest["inputs"]["nodejs"]["hosts"] = [RUST_HOSTS[0]]
+        (self.root / "BUILD.json").write_text(json.dumps(manifest))
+        result, calls = self.check(system="Darwin", arch="aarch64")
+        self.assertFalse(result["passed"])
+        self.assertIn("Node.js payload missing", result["error"])
         calls.assert_not_called()
 
 

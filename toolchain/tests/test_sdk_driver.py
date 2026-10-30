@@ -49,6 +49,7 @@ static int fixture_execvp(const char *file,char *const args[]) {
   for(int i=0;args[i];i++)if(strstr(args[i],"/cargo")) {
     if(getenv("RUSTC"))dprintf(1,"rustc=%s\n",getenv("RUSTC"));
     if(getenv("RUSTDOC"))dprintf(1,"rustdoc=%s\n",getenv("RUSTDOC"));
+    if(getenv("RUSTC_WRAPPER"))dprintf(1,"wrapper=%s\n",getenv("RUSTC_WRAPPER"));
   }
   _exit(0);
 }
@@ -63,9 +64,9 @@ int extract_sdk_zip(const char *archive,const char *root,enum SdkComponent compo
     const char *pieces[]={"rust-toolchain","hosts",host,"sysroot","bin"};
     snprintf(path,sizeof(path),"%s",root);
     for(int i=0;i<5;i++){strcat(path,"/");strcat(path,pieces[i]);if(mkdir(path,0700))return -1;}
-    for(int i=0;i<2;i++) {
+    for(int i=0;i<3;i++) {
       char source[4096],target[4096];
-      const char *name=i?"cargo":"rustc",*suffix=IsWindows()?".exe":"";
+      const char *name=i==0?"rustc":i==1?"cargo":"sccache",*suffix=IsWindows()?".exe":"";
       snprintf(source,sizeof(source),"%s/rust-toolchain/hosts/%s/sysroot/bin/%s%s",getenv("TEST_RESOURCES"),host,name,suffix);
       snprintf(target,sizeof(target),"%s/%s%s",path,name,suffix);
       FILE *in=fopen(source,"rb"),*out=fopen(target,"wb");if(!in||!out)return -1;
@@ -74,6 +75,19 @@ int extract_sdk_zip(const char *archive,const char *root,enum SdkComponent compo
       fclose(in);fclose(out);if(chmod(target,0700))return -1;
     }
     return 0;
+  }
+  if(component==SDK_NODEJS) {
+    const char *pieces[]={"nodejs","hosts",host,"bin"};
+    snprintf(path,sizeof(path),"%s",root);
+    for(int i=0;i<4;i++){strcat(path,"/");strcat(path,pieces[i]);if(mkdir(path,0700))return -1;}
+    char source[4096],target[4096];
+    const char *suffix=IsWindows()?".exe":"";
+    snprintf(source,sizeof(source),"%s/nodejs/hosts/%s/bin/node%s",getenv("TEST_RESOURCES"),host,suffix);
+    snprintf(target,sizeof(target),"%s/node%s",path,suffix);
+    FILE *in=fopen(source,"rb"),*out=fopen(target,"wb");if(!in||!out)return -1;
+    char buffer[512];size_t size;
+    while((size=fread(buffer,1,sizeof(buffer),in)))fwrite(buffer,1,size,out);
+    fclose(in);fclose(out);return chmod(target,0700);
   }
   snprintf(path,sizeof(path),"%s/bin",root);if(mkdir(path,0700))return -1;
   snprintf(path,sizeof(path),"%s/bin/cosmocc",root);
@@ -116,6 +130,7 @@ class SdkDriverTest(unittest.TestCase):
         self.native_machine = 183 if platform.machine() in ("aarch64", "arm64") else 62
         self.host = ("aarch64" if self.native_machine == 183 else "x86_64") + "-unknown-linux-gnu"
         self.rustc = self.add_host(self.host)
+        self.node = self.add_node_host(self.host)
 
     def add_host(self, host):
         directory = self.root / "rust-toolchain/hosts" / host / "sysroot/bin"
@@ -125,7 +140,18 @@ class SdkDriverTest(unittest.TestCase):
             path = directory / (name + suffix)
             path.write_bytes(binary_fixture(host))
             path.chmod(0o755)
+        cache = directory / ("sccache.exe" if "windows" in host else "sccache")
+        cache.write_bytes(b"sccache")
+        cache.chmod(0o755)
         return directory / ("rustc" + suffix)
+
+    def add_node_host(self, host):
+        directory = self.root / "nodejs/hosts" / host / "bin"
+        directory.mkdir(parents=True)
+        path = directory / ("node.exe" if "windows" in host else "node")
+        path.write_bytes(binary_fixture(host))
+        path.chmod(0o755)
+        return path
 
     def run_driver(self, *args, system="Linux", extra_env=None):
         return subprocess.run([str(self.executable), *args], text=True, capture_output=True,
@@ -201,6 +227,28 @@ class SdkDriverTest(unittest.TestCase):
         self.assertIn("Packaged Rust compiler does not match", result.stderr)
         self.assertNotIn("SDK materialized", result.stderr)
 
+    def test_native_node_uses_packaged_host_executable(self):
+        result = self.run_driver("node", "-e", "console.log(42)")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("/nodejs/hosts/" + self.host + "/bin/node", result.stdout)
+        self.assertIn("arg=-e", result.stdout)
+        self.assertIn("arg=console.log(42)", result.stdout)
+
+    def test_missing_node_host_fails_before_sdk_extraction(self):
+        result = self.run_driver("node", "--version", system="Darwin")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Node.js not packaged for", result.stderr)
+        self.assertNotIn("SDK materialized", result.stderr)
+        self.assertNotIn("exec=", result.stdout)
+
+    def test_mismatched_node_host_is_rejected_before_extraction(self):
+        header = bytearray(self.node.read_bytes())
+        header[18] = 62 if self.native_machine == 183 else 183
+        self.node.write_bytes(header)
+        result = self.run_driver("node", "--version")
+        self.assertIn("Packaged Node.js does not match", result.stderr)
+        self.assertNotIn("SDK materialized", result.stderr)
+
     def test_status_identifies_packaged_compiler_platform(self):
         result = self.run_driver("rust", "status")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -211,6 +259,22 @@ class SdkDriverTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("/hosts/" + self.host + "/sysroot/bin/rustc", result.stdout)
         self.assertIn("arg=--sysroot", result.stdout)
+
+    def test_native_sccache_uses_its_host_sysroot(self):
+        result = self.run_driver("rust", "sccache", "--version")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("/hosts/" + self.host + "/sysroot/bin/sccache", result.stdout)
+        self.assertIn("arg=--version", result.stdout)
+
+    def test_cargo_uses_packaged_sccache_when_wrapper_is_unset(self):
+        result = self.run_driver("rust", "cargo", "--version")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout, r"wrapper=.*/cosmo-sdk-[^/]+/rust-toolchain/hosts/" + self.host + r"/sysroot/bin/sccache\n")
+
+    def test_cargo_preserves_an_explicit_wrapper(self):
+        result = self.run_driver("rust", "cargo", "--version", extra_env={"RUSTC_WRAPPER": "/caller/wrapper"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("wrapper=/caller/wrapper", result.stdout)
 
     def test_macos_rust_payload_is_selected_for_current_process_architecture(self):
         host = ("aarch64" if self.native_machine == 183 else "x86_64") + "-apple-darwin"
@@ -232,6 +296,14 @@ class SdkDriverTest(unittest.TestCase):
                 self.assertIn("rustc=", result.stdout)
                 self.assertIn("/bin/rustc.exe", result.stdout)
                 self.assertIn("/bin/rustdoc.exe", result.stdout)
+
+    def test_windows_node_uses_exe_and_waits_through_native_shell_boundary(self):
+        host = "x86_64-pc-windows-msvc"
+        self.add_node_host(host)
+        result = self.run_driver("node", "--version", system="Windows")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("/nodejs/hosts/" + host + "/bin/node.exe", result.stdout)
+        self.assertIn('"$0" "$@"; result=$?; exit "$result"', result.stdout)
 
 
 if __name__ == "__main__":

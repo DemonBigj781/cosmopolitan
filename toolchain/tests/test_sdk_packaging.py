@@ -16,7 +16,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "toolchain/package-compiler-sdk.sh"
 sys.path.insert(0, str(ROOT / "toolchain"))
-from bootstrap import RUST_NOTICES, RUST_HOSTS, stage_rust, load_pins
+from bootstrap import NODEJS_RELEASE_HOSTS, RUST_NOTICES, RUST_HOSTS, stage_rust, load_pins
 from file_metadata import sha256
 from provenance import record_artifact
 from rust_fixtures import make_sysroot, binary_fixture
@@ -50,6 +50,7 @@ class SdkPackagingTest(unittest.TestCase):
         self.cosmocc = self.workdir / "cosmocc"
         self.source = self.workdir / "source"
         self.compiler = self.workdir / "compiler"
+        self.nodejs = self.workdir / "nodejs"
         self.sdk = self.workdir / "sdk"
         self.archive = self.workdir / "o/toolchain/compiler-payload/cosmocc-sdk.zip"
         self.archive.parent.mkdir(parents=True)
@@ -61,6 +62,23 @@ class SdkPackagingTest(unittest.TestCase):
         sources = {host: make_sysroot(self.workdir / "sources", host) for host in RUST_HOSTS}
         stage_rust(sources, self.compiler, load_pins(ROOT))
         (self.compiler / ".toolchain-bootstrap.json").unlink()
+        for host in RUST_HOSTS:
+            sccache = self.compiler / "hosts" / host / "sysroot/bin" / ("sccache.exe" if "windows" in host else "sccache")
+            sccache.write_text("sccache")
+            sccache.chmod(0o755)
+            self.write(self.compiler / "hosts" / host / "sysroot", "share/doc/sccache/LICENSE", "sccache license")
+        for host in NODEJS_RELEASE_HOSTS:
+            suffix = ".exe" if "windows" in host else ""
+            node = self.nodejs / "hosts" / host / "bin" / ("node" + suffix)
+            node.parent.mkdir(parents=True, exist_ok=True)
+            node.write_bytes(binary_fixture(host))
+            node.chmod(0o755)
+            self.write(self.nodejs / "hosts" / host, "share/doc/nodejs/LICENSE", "node license")
+        self.write(self.nodejs, "hosts.json", json.dumps({
+            "schema_version": 1,
+            "hosts": list(NODEJS_RELEASE_HOSTS),
+            "version": "26.13.0",
+        }))
         self.write(self.sdk, "generated/x86_64-unknown-linux-musl.json", "{}")
         for arch in ("x86_64", "aarch64"):
             name = f"{arch}-unknown-linux-musl.json"
@@ -90,10 +108,11 @@ class SdkPackagingTest(unittest.TestCase):
             path.chmod(0o755)
         return path
 
-    def run_packager(self, with_rust=True, machin=None):
+    def run_packager(self, with_rust=True, machin=None, with_node=True):
         args = [str(self.cosmocc)]
         args += ([str(self.source), str(self.compiler), str(self.sdk)]
                  if with_rust else ["", "", ""])
+        args.append(str(self.nodejs) if with_node else "")
         args.append(str(ROOT / "toolchain"))
         args.extend([str(machin) if machin else "", str(machin / "compiler") if machin else ""])
         return subprocess.run(
@@ -101,8 +120,8 @@ class SdkPackagingTest(unittest.TestCase):
             cwd=self.workdir, text=True, capture_output=True,
         )
 
-    def package(self, with_rust=True):
-        result = self.run_packager(with_rust)
+    def package(self, with_rust=True, with_node=True):
+        result = self.run_packager(with_rust, with_node=with_node)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("Duplicate name", result.stderr)
         return zipfile.ZipFile(self.archive)
@@ -126,6 +145,9 @@ class SdkPackagingTest(unittest.TestCase):
         with self.package() as archive:
             for name in ("bin/cosmocc", "include/stdio.h", "lib/libc.a",
                          RUST_PREFIX + "/bin/rustc", RUST_PREFIX + "/bin/cargo",
+                          RUST_PREFIX + "/bin/sccache", RUST_PREFIX + "/share/doc/sccache/LICENSE",
+                          "nodejs/hosts/" + HOST + "/bin/node",
+                          "nodejs/hosts/" + HOST + "/share/doc/nodejs/LICENSE",
                          RUST_PREFIX + "/lib/librustc_driver.so", "rust-ape/run.sh",
                          "rust-ape/EMBEDDED.txt", "rust-ape-sdk/LICENSE",
                          "rust-ape-sdk/generated/x86_64-unknown-linux-musl.json",
@@ -215,7 +237,7 @@ class SdkPackagingTest(unittest.TestCase):
         self.assertTrue(os.access(link, os.X_OK))
 
     def test_c_only_payload_remains_supported(self):
-        with self.package(with_rust=False) as archive:
+        with self.package(with_rust=False, with_node=False) as archive:
             self.assertEqual(set(archive.namelist()),
                              {"bin/cosmocc", "include/stdio.h", "lib/libc.a", "toolchain-metadata/BUILD.json"})
 
@@ -227,7 +249,9 @@ class SdkPackagingTest(unittest.TestCase):
             record = json.loads(archive.read("toolchain-metadata/BUILD.json"))
             self.assertEqual(record["inputs"]["cosmocc"]["verification"], "unverified-local-input")
             self.assertEqual(record["inputs"]["rust_compiler"]["verification"], "unverified-local-input")
-            self.assertEqual(len(record["notices"]), len(RUST_NOTICES) * len(RUST_HOSTS))
+            self.assertEqual(record["inputs"]["nodejs"]["verification"], "unverified-local-input")
+            self.assertEqual(len(record["notices"]),
+                             (len(RUST_NOTICES) + 1) * len(RUST_HOSTS) + len(NODEJS_RELEASE_HOSTS))
             self.assertNotIn(str(self.workdir), json.dumps(record))
 
     def test_missing_compiler_notice_fails_before_packaging(self):
@@ -260,7 +284,7 @@ class SdkPackagingTest(unittest.TestCase):
         machin = self.workdir / "machin"
         self.write(machin, "LICENSE", "Machin license fixture")
         self.write(machin, "compiler", "compiler fixture")
-        result = self.run_packager(with_rust=False, machin=machin)
+        result = self.run_packager(with_rust=False, machin=machin, with_node=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         with zipfile.ZipFile(self.archive) as archive:
             self.assertEqual(archive.read("toolchain-metadata/licenses/machin/LICENSE"), b"Machin license fixture")
@@ -276,7 +300,7 @@ class SdkPackagingTest(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((destination / "bin/cosmocc").read_text(), "compiler")
-        for name in ("rust-ape", "rust-toolchain", "rust-ape-sdk"):
+        for name in ("rust-ape", "rust-toolchain", "rust-ape-sdk", "nodejs"):
             self.assertFalse((destination / name).exists(), name)
 
     def test_rust_extraction_does_not_materialize_c_or_patched_sdk(self):
@@ -288,21 +312,36 @@ class SdkPackagingTest(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((destination / RUST_PREFIX / "bin/rustc").read_bytes(), binary_fixture(HOST))
-        for name in ("bin", "include", "rust-ape", "rust-ape-sdk"):
+        for name in ("bin", "include", "rust-ape", "rust-ape-sdk", "nodejs"):
             self.assertFalse((destination / name).exists(), name)
+
+    def test_nodejs_extraction_selects_only_current_host(self):
+        with self.package():
+            pass
+        destination = self.workdir / "nodejs-only"
+        destination.mkdir()
+        result = subprocess.run([str(self.extractor), str(self.archive), str(destination), "nodejs", HOST],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        node_root = destination / "nodejs"
+        self.assertEqual((node_root / "hosts" / HOST / "bin/node").read_bytes(), binary_fixture(HOST))
+        self.assertEqual([path.name for path in (node_root / "hosts").iterdir()], [HOST])
+        self.assertFalse((destination / "bin").exists())
+        self.assertFalse((destination / "rust-toolchain").exists())
 
     def test_components_can_be_materialized_once_into_same_directory(self):
         with self.package():
             pass
         destination = self.workdir / "combined"
         destination.mkdir()
-        for component in ("rust", "c"):
+        for component in ("rust", "nodejs", "c"):
             result = subprocess.run([str(self.extractor), str(self.archive), str(destination), component] +
-                                    ([HOST] if component == "rust" else []),
+                                    ([HOST] if component in ("rust", "nodejs") else []),
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((destination / "bin/cosmocc").is_file())
         self.assertTrue((destination / RUST_PREFIX / "bin/rustc").is_file())
+        self.assertTrue((destination / "nodejs/hosts" / HOST / "bin/node").is_file())
         self.assertFalse((destination / "rust-ape-sdk").exists())
 
     def test_rust_extraction_selects_one_host_and_keeps_shared_target_aliases(self):

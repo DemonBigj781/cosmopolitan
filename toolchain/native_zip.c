@@ -26,8 +26,15 @@ static int selected(const char *name,enum SdkComponent component,const char *rus
            !strcmp(name,"rust-toolchain/hosts.json") || !strcmp(name,"rust-toolchain/.toolchain-bootstrap.json");
   }
   if(component==SDK_RUST_APE)return under(name,"rust-ape-sdk");
+  if(component==SDK_NODEJS){
+    char prefix[256];
+    if(snprintf(prefix,sizeof(prefix),"nodejs/hosts/%s",rust_host)>=(int)sizeof(prefix))return 0;
+    return under(name,prefix) || !strcmp(name,"nodejs/hosts.json") ||
+           !strcmp(name,"nodejs/.toolchain-bootstrap.json");
+  }
   return !under(name,"rust-toolchain") && !under(name,"rust-ape-sdk") &&
-         !under(name,"rust-ape") && strcmp(name,".cosmo") && strncmp(name,".symtab.",8);
+         !under(name,"rust-ape") && !under(name,"nodejs") &&
+         strcmp(name,".cosmo") && strncmp(name,".symtab.",8);
 }
 
 static uint16_t u16(const unsigned char *p){return (uint16_t)p[0]|((uint16_t)p[1]<<8);}
@@ -123,7 +130,7 @@ static int inflate_entry(FILE *f,uint64_t off,uint32_t clen,uint32_t ulen,
 }
 int extract_sdk_zip(const char *archive,const char *root,enum SdkComponent component,const char *rust_host){
   if(component<SDK_C || component>SDK_ALL)return -1;
-  if(component==SDK_RUST){
+  if(component==SDK_RUST || component==SDK_NODEJS){
     if(!rust_host || !*rust_host || strlen(rust_host)>128)return -1;
     for(const char *p=rust_host;*p;p++)
       if(!((*p>='a' && *p<='z') || (*p>='0' && *p<='9') || *p=='-' || *p=='_'))return -1;

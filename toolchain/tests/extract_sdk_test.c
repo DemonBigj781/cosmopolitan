@@ -11,8 +11,9 @@ int main(int argc, char **argv) {
     if (!strcmp(argv[3], "c")) component = SDK_C;
     else if (!strcmp(argv[3], "rust")) component = SDK_RUST;
     else if (!strcmp(argv[3], "ape")) component = SDK_RUST_APE;
+    else if (!strcmp(argv[3], "nodejs")) component = SDK_NODEJS;
     else return 2;
   }
-  if ((component == SDK_RUST) != (argc == 5)) return 2;
+  if (((component == SDK_RUST || component == SDK_NODEJS) != (argc == 5))) return 2;
   return extract_sdk_zip(argv[1], argv[2], component, argc == 5 ? argv[4] : NULL) ? 1 : 0;
 }

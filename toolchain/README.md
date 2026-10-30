@@ -5,10 +5,12 @@ C++, Rust and Machin. Transpilation is optional, not mandatory.
 
 ## Bootstrap milestone
 
-`build.sh` builds the minimal single-binary command dispatcher. The separate
+`build.sh` builds the minimal single-binary command dispatcher, including the
+existing Cosmopolitan Lua interpreter under the `lua` subcommand. The separate
 `package-compiler-sdk.sh` path packages compiler SDKs and can link the self-hosted
-Machin compiler when `MACHIN` and `MACHIN_SRC` are supplied. The sccache, xshell,
-and WebGPU discovery commands remain unimplemented and explicitly fail.
+Machin compiler when `MACHIN` and `MACHIN_SRC` are supplied. A verified native
+sccache wrapper is staged for every packaged Rust host; xshell and WebGPU
+discovery remain unimplemented and explicitly fail.
 
 Build with a Cosmopolitan C compiler:
 
@@ -17,6 +19,17 @@ COSMOCC=/path/to/cosmocc sh toolchain/build.sh
 ```
 
 Output: `o/toolchain/toolchain.com`.
+
+The Lua dispatcher uses the in-tree Lua interpreter and its complete Cosmopolitan
+library closure; it does not create a second Lua source tree. After a successful
+build, verify it with:
+
+```sh
+o/toolchain/toolchain.com lua -e 'print(6 * 7)'
+```
+
+Expected output: `42`. The build scripts also perform this smoke test after
+linking their minimal, Machin, self-hosted, and SDK-packaged APE variants.
 
 ## Pinned bootstrap and artifact provenance
 
@@ -35,6 +48,10 @@ x86-64/ARM64, and Windows x86-64 Rust/Cargo distributions into private rustup
 storage, then stages one multi-host SDK. It never changes the user's default
 toolchain or executes foreign-host compilers during staging. Distribution dates
 and binary host headers are checked, and all required notices are preserved.
+The same operation adds the pinned sccache release archives for those hosts,
+checking each archive SHA256 before copying its native wrapper and license into
+that host's sysroot. `bootstrap.py add-sccache DESTINATION` performs the same
+addition for an already staged Rust SDK and refuses existing files.
 `bootstrap.py stage-rust SYSROOT DESTINATION` can stage an existing single-host
 sysroot, provided it contains both GNU/Linux ELF target standard libraries.
 These helpers require Python 3.11+; installation also requires rustup.
@@ -107,9 +124,180 @@ caches owned by upstream tools are outside this cleanup contract.
 Extraction rejects existing leaf files/symlinks and symlink parent directories.
 Component-local aliases must stay within the selected component. Compiler output
 files requested outside the scratch directories are retained.
+
+`rust sccache` runs the packaged native wrapper for the current host. `rust
+cargo` automatically sets `RUSTC_WRAPPER` to that extracted native binary when
+the caller has not already supplied a wrapper; an explicit `RUSTC_WRAPPER` is
+preserved. The cache itself remains caller-owned through `SCCACHE_DIR`, and the
+sccache server remains a native host process. This is intentionally separate
+from `rust build`: that driver invokes direct `rustc --emit=obj -o ...` commands,
+which do not match sccache's Cargo-oriented Rust wrapper contract. The attached
+APE is not used as the Cargo wrapper because host `execve` handling for a
+basename-only APE alias is not portable; Cargo receives the native host binary
+instead.
+
 Paths printed by compiler introspection refer to invocation-local SDK files;
 external build systems requiring persistent SDK paths must use an explicitly
 materialized SDK rather than depending on previously leaked temporary trees.
+
+## Dependency audit
+
+The 2026-10-21 audit separates bootstrap dependencies, toolchain execution
+dependencies, and generated-program runtime dependencies. It used the packaged
+payload, the source-level subprocess boundaries, explicit APE-loader probes,
+and `strace -f -e trace=execve` on C, Rust, and Machin smoke builds.
+
+### Toolchain execution
+
+- The dispatcher, ZIPOS status path, and self-test run with an explicit native
+  APE loader and `PATH=/nonexistent`. They do not require a host compiler,
+  dynamic loader, shell utility, network connection, or SDK extraction for
+  those commands. Direct execution without an APE handler is different: on
+  Linux the kernel may fall back to the payload's shell-compatible launcher,
+  which needs the host `sh` and `mkdir` before the APE starts. Use the explicit
+  loader in isolated tests as documented below.
+- C/C++ commands invoke the packaged `cosmocc` shell driver through `sh` on
+  Unix or `sh.exe` on Windows. A normal Linux build exercised the host shell
+  utilities `mkdir`, `rm`, `mv`, `dd`, `gzip`, `chmod`, and `uname`; `cat` is
+  also required by the driver's non-terminal help path. The optional host `ape`
+  command can replace per-tool APE extraction; otherwise the SDK's `.ape-1.10`
+  scratch launcher is created in `TMPDIR`.
+- The packaged compiler chain then invokes APE tools and target-specific
+  compiler subprocesses: `x86_64-linux-cosmo-gcc`,
+  `aarch64-linux-cosmo-gcc`, GCC `cc1`, `as`, `collect2`, `ld.bfd`, `apelink`,
+  `fixupobj`, `mktemper`, and `pecheck`. These are packaged Cosmopolitan
+  programs; the host dependencies above are the shell boundary around them.
+- `rust build` invokes the packaged native `rustc` for both target objects,
+  then the packaged C compiler for the wrapper and final APE link. `machin
+  build` invokes the linked Machin compiler with `--full`, then follows the
+  same C compiler path. Go is a bootstrap-time dependency for building the
+  pinned Machin compiler, not a payload execution dependency.
+
+### Native compiler and loader dependencies
+
+The embedded Rust compiler, Cargo, and rustdoc remain native host programs,
+not APE compilers. On Linux x86-64 they are dynamically linked ELF binaries
+using `/lib64/ld-linux-x86-64.so.2`, the system `libc.so.6`, `libm.so.6`,
+`libpthread.so.0`, `librt.so.1`, `libdl.so.2`, `libgcc_s.so.1`, and `libz.so.1`.
+`rustc` additionally loads the packaged `librustc_driver` and `libLLVM` through
+its relative `$ORIGIN/../lib` runpath. Other packaged host triples have their
+own OS, architecture, loader, and system-library requirements. Bundling these
+files does not remove those host requirements.
+The packaged sccache binary has the same host-specific boundary; it needs the
+selected host's native loader and libraries, a writable cache directory, and
+its local server IPC. It is not an APE compiler or a portable replacement for
+the host Rust compiler.
+
+### Packaged Node.js companion
+
+`toolchain.com node [arguments]` runs the packaged Node.js v26.13.0 executable
+for the current host. The payload contains pinned official executables for Linux
+x86-64/ARM64, macOS x86-64/ARM64, and Windows x86-64; Windows ARM uses the same
+x64-emulation policy as the packaged Rust compiler. The dispatcher validates the
+native executable format before creating a temporary directory, extracts only
+the selected host component, forwards the Node exit status, and removes its owned
+temporary files afterward. It never falls back to a system-installed `node`.
+
+Stage the multi-host component with:
+
+```sh
+python3 toolchain/bootstrap.py nodejs /tmp/nodejs-embedded
+```
+
+Pass `NODEJS_ROOT=/tmp/nodejs-embedded` to `package-compiler-sdk.sh`, then run:
+
+```sh
+toolchain-with-sdk.com node -p '6 * 7'
+```
+
+Expected output: `42`. This packages the Node executable and its pinned upstream
+license as a native toolkit companion. It does not port Node, V8, or libuv to
+Cosmopolitan, and it does not currently package npm or Corepack.
+
+The generated C, Rust, and Machin outputs are static Cosmopolitan APEs. Their
+runtime portability therefore depends on an APE handler or an explicit native
+loader, rather than on the Linux dynamic loader used by native Rust/Cargo.
+Generated-program portability and compiler-host portability remain separate
+contracts.
+
+### Bootstrap and maintenance dependencies
+
+Bootstrap and packaging retain their existing host prerequisites: Python 3.11+
+for the helpers, `rustup` for pinned Rust distributions, `git` for the pinned
+Machin checkout, Go at the pinned version for Machin compilation, a host C
+compiler and zlib development files for the test/build harness, and `make` for
+Cosmopolitan archive rules. Rust-APE maintenance scripts additionally use
+`bash`, `python3`, and `perl`; they are not required by normal payload command
+execution. Network access is needed to fetch bootstrap inputs, not to use an
+already staged payload.
+
+The audit does not claim a universal host-free compiler: the shell driver,
+native Rust/Cargo distributions, loader setup, and bootstrap tools are explicit
+external boundaries. It does establish that the packaged APE toolchain does not
+silently fall back to an installed host compiler or host Rust toolchain during
+the validated C, Rust, and Machin paths.
+
+## Resource measurement baseline
+
+The 2026-10-21 Linux x86-64 baseline used the explicit native APE loader, the
+serial Cosmocc SDK, a warm local filesystem, and one compiler worker. These are
+measurements for comparison before optimization, not universal performance
+guarantees.
+
+- **Final payload:** 1,191,436,238 bytes.
+- **Embedded SDK archive:** 14,287 unique entries;
+  1,189,347,842 compressed bytes and 3,801,429,171 uncompressed bytes.
+- **`version` startup:** 0.0006 s median across 7 runs;
+  0.0005–0.0263 s observed.
+- **`selftest` startup:** 0.0005 s median across 7 runs;
+  0.0005–0.0006 s observed.
+- **`rust status` startup:** 0.0158 s median across 7 runs;
+  0.0157–0.0161 s observed.
+- **C smoke build:** 7.334 s and 186,596 KiB peak RSS. Its peak SDK
+  footprint was 1,552,558,756 bytes across 3,010 files and 148 directories;
+  the APE was 409,298 bytes.
+- **Rust APE build:** 13.929 s and 323,644 KiB peak RSS. Its peak SDK
+  footprint was 2,395,205,096 bytes across 6,851 files and 1,117 directories;
+  the APE was 409,416 bytes.
+- **Machin smoke build:** 6.863 s and 186,760 KiB peak RSS. Its peak SDK
+  footprint was 1,552,558,756 bytes across 3,010 files and 148 directories;
+  the APE was 731,071 bytes.
+- **C extraction writes:** 1,428,755,991 bytes across 2,966
+  `write`/`writev`/`pwrite64` calls to extracted SDK paths.
+
+All three measured builds returned zero and left only the upstream `.ape-1.10`
+scratch launcher in `TMPDIR`; the toolchain-owned SDK directories were removed.
+The dependency-count view is intentionally layered: the archive contains
+14,287 entries; `strace` observed 25 unique executable paths for C and 21 each
+for Rust and Machin; the Linux C trace used nine host utility executables; and
+the native Rust compiler set resolves to nine unique shared-library names,
+including the packaged Rust driver/LLVM libraries and system libraries.
+
+## Portability and regression gate evidence
+
+The local Linux x86-64 gate was rerun on 2026-10-21 with the explicit APE
+loader. A minimal `PATH` containing only the shell and the utilities needed by
+the Cosmocc scripts contained no `cc`, `rustc`, `cargo`, or `go`; packaged C,
+Rust, and Machin builds still returned zero and produced their expected APEs.
+The same three builds passed inside `bwrap --unshare-net` with a writable
+tmpfs and a bound output directory, demonstrating offline operation without
+network access.
+
+Negative probes covered an invalid Rust subcommand, missing C and Rust source
+files, and malformed Machin input. Each returned nonzero, emitted diagnostics,
+produced no output APE, and removed its owned temporary directories. The
+existing `check_native_status.py` probe also passed with `/tmp` read-only,
+network access disabled, and invalid-command handling; status completed in
+0.044 seconds.
+
+The Rust regression suite remains covered by the 116-test local suite. The
+existing WebGPU ABI and loader checks passed with 27 ABI checks and 30 provider
+isolation checks, and the LLVM/lavapipe source pins and metadata parse cleanly.
+The rebuilt `o/webgpu/webgpu_compute` passed checksum, version, embedded
+software-provider, Collatz, and 13x17-by-17x11 matrix checks through the
+explicit APE loader. The separate chroot verifier reached its setup phase but
+could not call `chroot` in this environment (`EPERM`), so isolated-root
+verification remains an environment limitation rather than an assumed pass.
 
 ## Independent compiler smoke tests
 

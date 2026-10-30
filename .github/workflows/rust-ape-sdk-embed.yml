@@ -20,6 +20,7 @@ jobs:
         uses: ./.github/actions/toolchain-bootstrap
         with:
           rust-compiler: 'true'
+          nodejs: 'true'
       - name: Build bootstrap APE
         run: |
           COSMOCC="$(find /tmp/cosmocc -type f -name cosmocc | head -n1)"
@@ -51,6 +52,7 @@ jobs:
             RUST_APE_SOURCE=third_party/rust_ape \
             RUST_COMPILER_ROOT=/tmp/rust-embedded \
             RUST_APE_SDK_ROOT="$GITHUB_WORKSPACE/o/rust-ape/sdk" \
+            NODEJS_ROOT=/tmp/nodejs-embedded \
             MACHIN=/tmp/machin-compiler MACHIN_SRC=/tmp/machin \
             bash toolchain/package-compiler-sdk.sh
       - name: Validate patched SDK payload inventory
@@ -68,8 +70,13 @@ jobs:
                   'rust-toolchain/hosts/x86_64-unknown-linux-gnu/sysroot/bin/rustc',
                   'rust-toolchain/hosts/x86_64-unknown-linux-gnu/sysroot/bin/cargo',
                   'rust-toolchain/hosts/x86_64-pc-windows-msvc/sysroot/bin/rustc.exe',
-                  'rust-toolchain/hosts/aarch64-apple-darwin/sysroot/bin/rustc',
-                  'rust-ape/run.sh',
+                   'rust-toolchain/hosts/aarch64-apple-darwin/sysroot/bin/rustc',
+                   'nodejs/hosts/x86_64-unknown-linux-gnu/bin/node',
+                   'nodejs/hosts/aarch64-unknown-linux-gnu/bin/node',
+                   'nodejs/hosts/x86_64-apple-darwin/bin/node',
+                   'nodejs/hosts/aarch64-apple-darwin/bin/node',
+                   'nodejs/hosts/x86_64-pc-windows-msvc/bin/node.exe',
+                   'rust-ape/run.sh',
               }
               missing=required-names
               assert not missing, f'Missing SDK resources: {missing}'
@@ -82,7 +89,8 @@ jobs:
           APE=o/toolchain/compiler-payload/toolchain-with-sdk.com
           "$APE" rust status | tee /tmp/rust-sdk-status.txt
           grep -Fx 'Patched Rust-APE SDK: packaged' /tmp/rust-sdk-status.txt
-          "$APE" rust cargo --version
+           "$APE" rust cargo --version
+          test "$("$APE" node -p '6 * 7')" = 42
           "$APE" machin build toolchain/machin_demo.mfl -o /tmp/machin-embed-regression.com
           /tmp/machin-embed-regression.com | grep -Fx 'Machin linked into Cosmopolitan APE'
       - name: Prepare shared smoke-test artifact

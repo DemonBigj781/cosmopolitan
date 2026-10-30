@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import zipfile
 
-from bootstrap import RUST_NOTICES, load_pins, rust_hosts
+from bootstrap import RUST_NOTICES, load_pins, nodejs_hosts, rust_hosts
 from file_metadata import STAMP, sha256, tree_sha256
 
 RESOURCE = "toolchain-metadata/BUILD.json"
@@ -26,12 +26,13 @@ def describe_tree(root: Path):
 
 
 def package_metadata(repo, cosmocc, rust_compiler=None, rust_source=None, rust_sdk=None,
-                     machin_source=None, machin_binary=None):
+                     nodejs=None, machin_source=None, machin_binary=None):
     inputs = {"cosmocc": describe_tree(cosmocc)}
     notices = {}
     extra_files = {}
     for key, path in (("rust_compiler", rust_compiler), ("rust_ape_source", rust_source),
-                      ("rust_ape_sdk", rust_sdk), ("machin", machin_source)):
+                      ("rust_ape_sdk", rust_sdk), ("nodejs", nodejs),
+                      ("machin", machin_source)):
         if path is not None:
             inputs[key] = describe_tree(path)
     if rust_compiler:
@@ -41,6 +42,16 @@ def package_metadata(repo, cosmocc, rust_compiler=None, rust_source=None, rust_s
             for name in RUST_NOTICES:
                 relative = "hosts/" + host + "/sysroot/" + name
                 notices["rust-toolchain/" + relative] = sha256(rust_compiler / relative)
+            sccache_license = rust_compiler / "hosts" / host / "sysroot/share/doc/sccache/LICENSE"
+            if sccache_license.is_file():
+                relative = "hosts/" + host + "/sysroot/share/doc/sccache/LICENSE"
+                notices["rust-toolchain/" + relative] = sha256(sccache_license)
+    if nodejs:
+        hosts = nodejs_hosts(nodejs)
+        inputs["nodejs"]["hosts"] = hosts
+        for host in hosts:
+            relative = "hosts/" + host + "/share/doc/nodejs/LICENSE"
+            notices["nodejs/" + relative] = sha256(nodejs / relative)
     if machin_source:
         license_path = machin_source / "LICENSE"
         archive_name = "toolchain-metadata/licenses/machin/LICENSE"

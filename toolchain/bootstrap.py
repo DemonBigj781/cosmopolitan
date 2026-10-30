@@ -8,14 +8,18 @@ import re
 import shutil
 import struct
 import subprocess
+import tarfile
 import tempfile
 import tomllib
+import zipfile
 
 from file_metadata import STAMP, sha256, tree_sha256
 
 ROOT = Path(__file__).resolve().parents[1]
 ELF_TARGETS = ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
 RUST_HOSTS = (*ELF_TARGETS, "x86_64-apple-darwin", "aarch64-apple-darwin", "x86_64-pc-windows-msvc")
+SCCACHE_RELEASE_HOSTS = RUST_HOSTS
+NODEJS_RELEASE_HOSTS = RUST_HOSTS
 RUST_NOTICES = (
     "share/doc/cargo/LICENSE-APACHE",
     "share/doc/cargo/LICENSE-MIT",
@@ -51,6 +55,41 @@ def load_pins(root=ROOT):
         raise ValueError("Cosmocc must have a SHA256 pin")
     if not re.fullmatch(r"nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}", pins["rust_nightly"]):
         raise ValueError("Rust nightly must use an exact date")
+    sccache = pins.get("sccache")
+    if not isinstance(sccache, dict) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", sccache.get("version", "")):
+        raise ValueError("sccache must use an exact version")
+    if sccache.get("repository") != "https://github.com/mozilla/sccache.git":
+        raise ValueError("sccache repository must be the Mozilla upstream repository")
+    if not re.fullmatch(r"[0-9a-f]{40}", sccache.get("revision", "")):
+        raise ValueError("sccache must use an exact upstream revision")
+    assets = sccache.get("assets")
+    if not isinstance(assets, dict) or set(assets) != set(SCCACHE_RELEASE_HOSTS):
+        raise ValueError("sccache assets must cover every packaged Rust host")
+    for host, asset in assets.items():
+        if not isinstance(asset, dict) or not re.fullmatch(r"sccache-v" + re.escape(sccache["version"]) + r"-[A-Za-z0-9._-]+\.tar\.gz", asset.get("archive", "")):
+            raise ValueError(f"Invalid sccache archive for {host}")
+        if not re.fullmatch(r"[0-9a-f]{64}", asset.get("sha256", "")):
+            raise ValueError(f"Invalid sccache checksum for {host}")
+    nodejs = pins.get("nodejs")
+    if not isinstance(nodejs, dict) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", nodejs.get("version", "")):
+        raise ValueError("Node.js must use an exact version")
+    if nodejs.get("repository") != "https://github.com/nodejs/node.git":
+        raise ValueError("Node.js repository must be the official upstream repository")
+    license_pin = nodejs.get("license")
+    expected_license_url = "https://raw.githubusercontent.com/nodejs/node/v{}/LICENSE".format(nodejs["version"])
+    if (not isinstance(license_pin, dict) or license_pin.get("url") != expected_license_url or
+            not re.fullmatch(r"[0-9a-f]{64}", license_pin.get("sha256", ""))):
+        raise ValueError("Node.js license must be pinned to the exact upstream release tag")
+    assets = nodejs.get("assets")
+    if not isinstance(assets, dict) or set(assets) != set(NODEJS_RELEASE_HOSTS):
+        raise ValueError("Node.js assets must cover every packaged host")
+    version = re.escape(nodejs["version"])
+    for host, asset in assets.items():
+        archive = asset.get("archive", "") if isinstance(asset, dict) else ""
+        if not re.fullmatch(r"node-v" + version + r"-[A-Za-z0-9._-]+\.(?:tar\.xz|zip)", archive):
+            raise ValueError(f"Invalid Node.js archive for {host}")
+        if not re.fullmatch(r"[0-9a-f]{64}", asset.get("sha256", "")):
+            raise ValueError(f"Invalid Node.js checksum for {host}")
     return pins
 
 
@@ -242,6 +281,156 @@ def stage_rust(sources, destination, pins):
         staged.rename(destination)
 
 
+def _archive_member(archive, suffix):
+    with tarfile.open(archive, "r:gz") as bundle:
+        matches = [member for member in bundle.getmembers()
+                   if member.isfile() and member.name.endswith("/" + suffix)]
+        if len(matches) != 1:
+            raise ValueError(f"Expected one {suffix} in sccache archive")
+        member = matches[0]
+        if not member.name.startswith("sccache-v") or ".." in Path(member.name).parts:
+            raise ValueError(f"Unsafe sccache archive member: {member.name}")
+        stream = bundle.extractfile(member)
+        if stream is None:
+            raise ValueError(f"Cannot read sccache archive member: {member.name}")
+        return stream.read()
+
+
+def download_sccache_asset(asset, destination, root=ROOT):
+    url = "https://github.com/mozilla/sccache/releases/download/v{}/{}".format(
+        asset["version"], asset["archive"])
+    subprocess.run(["curl", "-fsSL", url, "-o", str(destination)], cwd=root, check=True)
+    if sha256(destination) != asset["sha256"]:
+        raise ValueError(f"sccache archive checksum mismatch: {asset['archive']}")
+
+
+def add_sccache(destination, pins, root=ROOT):
+    destination = Path(destination).absolute()
+    hosts = rust_hosts(destination)
+    if not hosts:
+        raise ValueError("sccache requires at least one staged Rust host")
+    sccache = pins["sccache"]
+    with tempfile.TemporaryDirectory(prefix="sccache-bootstrap-", dir=destination.parent) as temporary:
+        for host in hosts:
+            asset = dict(sccache["assets"][host], version=sccache["version"])
+            archive = Path(temporary) / asset["archive"]
+            download_sccache_asset(asset, archive, root)
+            binary_name = "sccache.exe" if "windows" in host else "sccache"
+            license_name = "LICENSE"
+            binary = _archive_member(archive, binary_name)
+            license_text = _archive_member(archive, license_name)
+            bin_path = destination / "hosts" / host / "sysroot/bin" / binary_name
+            license_path = destination / "hosts" / host / "sysroot/share/doc/sccache" / license_name
+            if bin_path.exists() or license_path.exists():
+                raise FileExistsError(f"Refusing to overwrite existing sccache files for {host}")
+            bin_path.write_bytes(binary)
+            bin_path.chmod(0o755)
+            license_path.parent.mkdir(parents=True, exist_ok=True)
+            license_path.write_bytes(license_text)
+    rust_hosts(destination)
+    stamp_path = destination / STAMP
+    record = json.loads(stamp_path.read_text()) if stamp_path.exists() else {"schema_version": 1}
+    record["sccache"] = {
+        "repository": sccache["repository"],
+        "revision": sccache["revision"],
+        "version": sccache["version"],
+        "assets": {host: sccache["assets"][host] for host in SCCACHE_RELEASE_HOSTS},
+        "verification": "release-archive-sha256-checked",
+    }
+    record["tree_sha256"] = tree_sha256(destination)
+    stamp_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+
+
+def _nodejs_archive_member(archive, suffix):
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive) as bundle:
+            matches = [member for member in bundle.infolist()
+                       if not member.is_dir() and member.filename.endswith("/" + suffix)]
+            if len(matches) != 1:
+                raise ValueError(f"Expected one {suffix} in Node.js archive")
+            member = matches[0]
+            if member.filename.startswith("/") or ".." in Path(member.filename).parts:
+                raise ValueError(f"Unsafe Node.js archive member: {member.filename}")
+            return bundle.read(member)
+    with tarfile.open(archive, "r:xz") as bundle:
+        matches = [member for member in bundle.getmembers()
+                   if member.isfile() and member.name.endswith("/" + suffix)]
+        if len(matches) != 1:
+            raise ValueError(f"Expected one {suffix} in Node.js archive")
+        member = matches[0]
+        if member.name.startswith("/") or ".." in Path(member.name).parts:
+            raise ValueError(f"Unsafe Node.js archive member: {member.name}")
+        stream = bundle.extractfile(member)
+        if stream is None:
+            raise ValueError(f"Cannot read Node.js archive member: {member.name}")
+        return stream.read()
+
+
+def download_nodejs_asset(asset, destination, root=ROOT):
+    url = "https://nodejs.org/dist/v{}/{}".format(asset["version"], asset["archive"])
+    subprocess.run(["curl", "-fsSL", url, "-o", str(destination)], cwd=root, check=True)
+    if sha256(destination) != asset["sha256"]:
+        raise ValueError(f"Node.js archive checksum mismatch: {asset['archive']}")
+
+
+def download_nodejs_license(license_pin, destination, root=ROOT):
+    subprocess.run(["curl", "-fsSL", license_pin["url"], "-o", str(destination)], cwd=root, check=True)
+    if sha256(destination) != license_pin["sha256"]:
+        raise ValueError("Node.js license checksum mismatch")
+
+
+def nodejs_hosts(root):
+    value = json.loads((root / "hosts.json").read_text())
+    hosts = value.get("hosts")
+    if (value.get("schema_version") != 1 or not hosts or len(set(hosts)) != len(hosts) or
+            any(host not in NODEJS_RELEASE_HOSTS for host in hosts)):
+        raise ValueError("Invalid Node.js host inventory")
+    for host in hosts:
+        suffix = ".exe" if "windows" in host else ""
+        binary = root / "hosts" / host / "bin" / ("node" + suffix)
+        if binary_host(binary) != host:
+            raise ValueError(f"Wrong Node.js host in {host}")
+        notice = root / "hosts" / host / "share/doc/nodejs/LICENSE"
+        if not notice.is_file():
+            raise FileNotFoundError(notice)
+    return hosts
+
+
+def bootstrap_nodejs(destination, pins, root=ROOT):
+    destination = destination.absolute()
+    require_new(destination)
+    nodejs = pins["nodejs"]
+    with tempfile.TemporaryDirectory(prefix="nodejs-bootstrap-", dir=destination.parent) as temporary:
+        staged = Path(temporary) / "nodejs"
+        license_path = Path(temporary) / "LICENSE"
+        download_nodejs_license(nodejs["license"], license_path, root)
+        for host in NODEJS_RELEASE_HOSTS:
+            asset = dict(nodejs["assets"][host], version=nodejs["version"])
+            archive = Path(temporary) / asset["archive"]
+            download_nodejs_asset(asset, archive, root)
+            suffix = ".exe" if "windows" in host else ""
+            binary = staged / "hosts" / host / "bin" / ("node" + suffix)
+            notice = staged / "hosts" / host / "share/doc/nodejs/LICENSE"
+            binary.parent.mkdir(parents=True, exist_ok=True)
+            notice.parent.mkdir(parents=True, exist_ok=True)
+            binary.write_bytes(_nodejs_archive_member(archive, "node.exe" if suffix else "bin/node"))
+            binary.chmod(0o755)
+            shutil.copy2(license_path, notice)
+        (staged / "hosts.json").write_text(json.dumps({
+            "schema_version": 1,
+            "hosts": list(NODEJS_RELEASE_HOSTS),
+            "version": nodejs["version"],
+        }, indent=2) + "\n")
+        nodejs_hosts(staged)
+        stamp(staged, nodejs={
+            "repository": nodejs["repository"],
+            "version": nodejs["version"],
+            "assets": nodejs["assets"],
+        }, verification="release-archive-sha256-and-binary-host-checked")
+        require_new(destination)
+        staged.rename(destination)
+
+
 def bootstrap_rust(destination, pins):
     destination = destination.absolute()
     require_new(destination)
@@ -258,6 +447,7 @@ def bootstrap_rust(destination, pins):
                             "--no-self-update", "--force-non-host"], env=environment, check=True)
             sources[host] = root / "rustup/toolchains" / name
         stage_rust(sources, destination, pins)
+    add_sccache(destination, pins)
 
 
 def main():
@@ -267,12 +457,15 @@ def main():
     pins_parser.add_argument("--github-output", type=Path)
     commands.add_parser("sdk").add_argument("destination", type=Path)
     commands.add_parser("rust").add_argument("destination", type=Path)
+    commands.add_parser("nodejs").add_argument("destination", type=Path)
     machin = commands.add_parser("machin")
     machin.add_argument("source", type=Path)
     machin.add_argument("binary", type=Path)
     rust = commands.add_parser("stage-rust")
     rust.add_argument("source", type=Path)
     rust.add_argument("destination", type=Path)
+    sccache = commands.add_parser("add-sccache")
+    sccache.add_argument("destination", type=Path)
     args = parser.parse_args()
     pins = load_pins()
     if args.command == "pins":
@@ -287,6 +480,10 @@ def main():
         bootstrap_machin(args.source, args.binary, pins)
     elif args.command == "rust":
         bootstrap_rust(args.destination, pins)
+    elif args.command == "nodejs":
+        bootstrap_nodejs(args.destination, pins)
+    elif args.command == "add-sccache":
+        add_sccache(args.destination, pins)
     else:
         compiler = args.source / "bin/rustc"
         if not compiler.is_file():

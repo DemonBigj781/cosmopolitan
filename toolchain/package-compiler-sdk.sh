@@ -13,7 +13,9 @@ mkdir -p o/toolchain
 "$COSMOCC" -O2 -c toolchain/rust_build.c -o o/toolchain/rust-build.o
 "$COSMOCC" -O2 -c toolchain/tempdir.c -o o/toolchain/tempdir.o
 # Optional self-hosted Machin compiler linked into the SAME APE.
-if [[ -n "${MACHIN:-}" && -n "${MACHIN_SRC:-}" ]]; then
+if [[ -n "${MACHIN_OBJECT:-}" ]]; then
+  test -f "$MACHIN_OBJECT"
+elif [[ -n "${MACHIN:-}" && -n "${MACHIN_SRC:-}" ]]; then
   sources=(selfhost/lex.src selfhost/parse.src selfhost/check.src
     selfhost/checkgen.src selfhost/cgen.src selfhost/cgbuiltin.src
     selfhost/alias.src selfhost/cgagg.src selfhost/cgffi.src
@@ -28,50 +30,48 @@ if [[ -n "${MACHIN:-}" && -n "${MACHIN_SRC:-}" ]]; then
 else
   MACHIN_OBJECT=""
 fi
-# Use Cosmopolitan's own zlib build rules instead of compiling source ad hoc.
-# The archive includes the SIMD and header configuration needed by this fork.
+# Use Cosmopolitan's own archive rules instead of compiling sources ad hoc.
+# The archives include the SIMD and header configuration needed by this fork.
 COSMO_MAKE="${COSMO_MAKE:-make}"
-"$COSMO_MAKE" -j1 o//third_party/zlib/zlib.a
-ZLIB_ARCHIVE="o/third_party/zlib/zlib.a"
-if [ ! -f "$ZLIB_ARCHIVE" ]; then
-  ZLIB_ARCHIVE="o//third_party/zlib/zlib.a"
+LUA_DEPS=$(COSMO_MAKE="$COSMO_MAKE" sh toolchain/prepare-lua.sh)
+# shellcheck disable=SC2086
+MACHIN_ARM_OBJECT=""
+if [[ -n "$MACHIN_OBJECT" ]]; then
+  MACHIN_ARM_OBJECT="${MACHIN_OBJECT%/*}/.aarch64/${MACHIN_OBJECT##*/}"
 fi
-test -f "$ZLIB_ARCHIVE" || { echo "Cosmopolitan zlib archive missing" >&2; exit 1; }
-# Build an ARM64 companion archive using Cosmopolitan's own Make rules.
-# The multiarch cosmocc wrapper requires matching x86-64 and ARM64 archives.
-"$COSMO_MAKE" -j1 MODE=aarch64 o/aarch64/third_party/zlib/zlib.a
-ARM_ZLIB="o/aarch64/third_party/zlib/zlib.a"
-test -f "$ARM_ZLIB" || { echo "ARM64 zlib archive missing" >&2; exit 1; }
-mkdir -p o/third_party/zlib/.aarch64
-cp "$ARM_ZLIB" o/third_party/zlib/.aarch64/zlib.a
-"$COSMOCC" -O2 -o o/toolchain/toolchain.com \
-  o/toolchain/dispatcher-embed.o o/toolchain/sdk-driver.o \
-  o/toolchain/native-zip.o o/toolchain/machin-build.o o/toolchain/rust-build.o \
-  o/toolchain/tempdir.o ${MACHIN_OBJECT:+"$MACHIN_OBJECT"} "$ZLIB_ARCHIVE"
+TOOLCHAIN_OBJECTS="o/toolchain/dispatcher-embed.o o/toolchain/sdk-driver.o o/toolchain/native-zip.o o/toolchain/machin-build.o o/toolchain/rust-build.o o/toolchain/tempdir.o o//toolchain/lua_entry.o ${MACHIN_OBJECT}"
+TOOLCHAIN_ARM_OBJECTS="o/toolchain/.aarch64/dispatcher-embed.o o/toolchain/.aarch64/sdk-driver.o o/toolchain/.aarch64/native-zip.o o/toolchain/.aarch64/machin-build.o o/toolchain/.aarch64/rust-build.o o/toolchain/.aarch64/tempdir.o o/toolchain/.aarch64/lua_entry.o ${MACHIN_ARM_OBJECT}"
+TOOLCHAIN_DEPS="$LUA_DEPS"
+export TOOLCHAIN_OBJECTS TOOLCHAIN_ARM_OBJECTS TOOLCHAIN_DEPS COSMOCC COSMO_MAKE
+sh toolchain/link-unified-ape.sh o/toolchain/toolchain.com
 mkdir -p o/toolchain/compiler-payload
-python3 - "$COSMOCC_ROOT" "${RUST_APE_SOURCE:-}" "${RUST_COMPILER_ROOT:-}" "${RUST_APE_SDK_ROOT:-}" "$PWD/toolchain" "${MACHIN_SRC:-}" "${MACHIN:-}" <<'PY'
+python3 - "$COSMOCC_ROOT" "${RUST_APE_SOURCE:-}" "${RUST_COMPILER_ROOT:-}" "${RUST_APE_SDK_ROOT:-}" "${NODEJS_ROOT:-}" "$PWD/toolchain" "${MACHIN_SRC:-}" "${MACHIN:-}" <<'PY'
 import json,os,sys,zipfile,stat
 from pathlib import Path
-sys.path.insert(0,sys.argv[5])
+sys.path.insert(0,sys.argv[6])
 from rust_sdk_resources import portable_rust_resources
 from provenance import RESOURCE, package_metadata
 root=os.path.realpath(sys.argv[1])
 rust_source=os.path.realpath(sys.argv[2]) if sys.argv[2] else None
 rust_compiler=os.path.realpath(sys.argv[3]) if sys.argv[3] else None
 rust_ape_sdk=os.path.realpath(sys.argv[4]) if sys.argv[4] else None
+nodejs=os.path.realpath(sys.argv[5]) if sys.argv[5] else None
 if rust_ape_sdk and not os.path.isfile(os.path.join(rust_ape_sdk,'generated','x86_64-unknown-linux-musl.json')):
     raise SystemExit('RUST_APE_SDK_ROOT must contain generated/x86_64-unknown-linux-musl.json')
 if rust_compiler and not os.path.isfile(os.path.join(rust_compiler,'hosts.json')):
     raise SystemExit('RUST_COMPILER_ROOT must be a staged multi-host Rust SDK with hosts.json')
 if rust_source and not os.path.isfile(os.path.join(rust_source,'run.sh')):
     raise SystemExit('RUST_APE_SOURCE must point to third_party/rust_ape')
+if nodejs and not os.path.isfile(os.path.join(nodejs,'hosts.json')):
+    raise SystemExit('NODEJS_ROOT must be a staged multi-host Node.js toolkit with hosts.json')
 metadata,notices=package_metadata(
-    Path(sys.argv[5]).resolve().parent, Path(root),
+    Path(sys.argv[6]).resolve().parent, Path(root),
     Path(rust_compiler) if rust_compiler else None,
     Path(rust_source) if rust_source else None,
     Path(rust_ape_sdk) if rust_ape_sdk else None,
-    Path(sys.argv[6]) if sys.argv[6] and sys.argv[7] else None,
-    Path(sys.argv[7]) if sys.argv[6] and sys.argv[7] else None)
+    Path(nodejs) if nodejs else None,
+    Path(sys.argv[7]) if sys.argv[7] and sys.argv[8] else None,
+    Path(sys.argv[8]) if sys.argv[7] and sys.argv[8] else None)
 out='o/toolchain/compiler-payload/cosmocc-sdk.zip'
 files=[]
 for directory,_,names in os.walk(root):
@@ -125,6 +125,22 @@ with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,al
                     z.write(path,arc)
                 count+=1
         print('Rust compiler SDK entries packaged:',count)
+    if nodejs:
+        count=0
+        for directory, dirs, names in os.walk(nodejs):
+            dirs[:] = sorted(dirs)
+            for name in sorted(names):
+                path=os.path.join(directory,name)
+                arc='nodejs/'+os.path.relpath(path,nodejs)
+                if os.path.islink(path):
+                    info=zipfile.ZipInfo(arc)
+                    info.create_system=3
+                    info.external_attr=(stat.S_IFLNK | 0o777)<<16
+                    z.writestr(info,os.readlink(path))
+                elif os.path.isfile(path):
+                    z.write(path,arc)
+                count+=1
+        print('Node.js toolkit entries packaged:',count)
     if rust_ape_sdk:
         generated=portable_rust_resources(Path(rust_ape_sdk))
         count=0
@@ -166,6 +182,8 @@ with zipfile.ZipFile(out) as z:
         assert 'rust-ape/run.sh' in z.namelist()
     if rust_ape_sdk:
         assert 'rust-ape-sdk/generated/x86_64-unknown-linux-musl.json' in z.namelist()
+    if nodejs:
+        assert any(n.startswith('nodejs/hosts/') and os.path.basename(n) in ('node','node.exe') for n in names)
 print('payload:',out,'files:',len(files),'bytes:',os.path.getsize(out))
 PY
 # Preserve existing executable resources and use native absolute ZIP offsets.
@@ -176,6 +194,7 @@ python3 toolchain/attach_sdk.py \
   --zipcopy "$COSMOCC_ROOT/bin/zipcopy"
 python3 toolchain/provenance.py o/toolchain/compiler-payload/toolchain-with-sdk.com
 o/toolchain/compiler-payload/toolchain-with-sdk.com selftest
+test "$(o/toolchain/compiler-payload/toolchain-with-sdk.com lua -e 'print(6 * 7)')" = 42
 if [[ -n "$MACHIN_OBJECT" ]]; then
   o/toolchain/compiler-payload/toolchain-with-sdk.com machin-compiler --full toolchain/machin_demo.mfl > o/toolchain/combined-machin-demo.c
   test -s o/toolchain/combined-machin-demo.c

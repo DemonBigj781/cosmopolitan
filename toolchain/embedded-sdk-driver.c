@@ -48,11 +48,13 @@ static int materialize(const char *self,enum SdkComponent component) {
   if(sdk_temp.fd==-1 && toolchain_temp_open(&sdk_temp,"cosmo-sdk")) {
     perror("create SDK temporary directory"); return 1;
   }
-  if(extract_sdk_zip(self,sdk_temp.path,component,component==SDK_RUST?rust_host_triple():NULL)) {
+  const char *host=(component==SDK_RUST || component==SDK_NODEJS)?rust_host_triple():NULL;
+  if(extract_sdk_zip(self,sdk_temp.path,component,host)) {
     fputs("SDK extraction failed\n",stderr); return 1;
   }
   sdk_loaded|=bit;
-  fprintf(stderr,"SDK materialized: %s (%s)\n",component==SDK_C?"C":"Rust",sdk_temp.path);
+  const char *name=component==SDK_C?"C":component==SDK_RUST?"Rust":"Node.js";
+  fprintf(stderr,"SDK materialized: %s (%s)\n",name,sdk_temp.path);
   return 0;
 }
 
@@ -174,7 +176,7 @@ static uint32_t read32le(const unsigned char *p) {
   return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
 }
 /* Host selection is explicit. Reject a mislabeled binary before extraction. */
-static int rust_binary_matches(const char *path) {
+static int native_binary_matches(const char *path) {
   unsigned char header[64];
   FILE *file=fopen(path,"rb");
   if(!file)return 0;
@@ -206,8 +208,26 @@ static int rust_host_available(void) {
     fprintf(stderr,"Rust compiler not packaged for %s; no SDK extracted\n",host?host:"this platform");
     return 2;
   }
-  if(!rust_binary_matches(rustc) || !rust_binary_matches(cargo)) {
+  if(!native_binary_matches(rustc) || !native_binary_matches(cargo)) {
     fprintf(stderr,"Packaged Rust compiler does not match %s; no SDK extracted\n",host);
+    return 126;
+  }
+  return 0;
+}
+static int nodejs_path(const char *root,char *node) {
+  const char *host=rust_host_triple(),*suffix=IsWindows()?".exe":"";
+  if(!host)return -1;
+  return snprintf(node,4096,"%s/nodejs/hosts/%s/bin/node%s",root,host,suffix)>=4096 ? -1 : 0;
+}
+static int nodejs_host_available(void) {
+  const char *host=rust_host_triple();
+  char node[4096];
+  if(nodejs_path("/zip",node) || access(node,R_OK)) {
+    fprintf(stderr,"Node.js not packaged for %s; no SDK extracted\n",host?host:"this platform");
+    return 2;
+  }
+  if(!native_binary_matches(node)) {
+    fprintf(stderr,"Packaged Node.js does not match %s; no SDK extracted\n",host);
     return 126;
   }
   return 0;
@@ -222,6 +242,11 @@ static int rust_status(void) {
   int unavailable=rust_paths("/zip",sysroot,rustc,cargo);
   puts(unavailable || access(rustc,X_OK) ? "Rust compiler: not packaged" : "Rust compiler: packaged");
   puts(unavailable || access(cargo,X_OK) ? "Cargo: not packaged" : "Cargo: packaged");
+  char sccache[4096];
+  int has_sccache=!unavailable &&
+      snprintf(sccache,sizeof(sccache),"%s/bin/sccache%s",sysroot,IsWindows()?".exe":"")<(int)sizeof(sccache) &&
+      !access(sccache,X_OK);
+  puts(has_sccache ? "sccache: packaged" : "sccache: not packaged");
   const char *host=rust_host_triple();
   printf("Rust compiler platform: %s\n",host?host:"unsupported platform");
   int target=access("/zip/rust-ape-sdk/generated/x86_64-unknown-linux-musl.json",R_OK);
@@ -232,15 +257,42 @@ static int rust_status(void) {
 }
 int embedded_sdk_main(int argc,char **argv) {
   if(argc<2) { fputs("Usage: toolchain.com cc [cosmocc arguments]\n",stderr); return 2; }
+  if(!strcmp(argv[1],"node")) {
+    int rc=nodejs_host_available();
+    if(rc)return rc;
+    char self[4096],node[4096];
+    if(!realpath(argv[0],self)) { perror("resolve executable"); return 1; }
+    if(materialize(self,SDK_NODEJS) || nodejs_path(sdk_temp.path,node))return 1;
+    if(access(node,X_OK)) {
+      fputs("Node.js executable missing after SDK extraction\n",stderr);
+      return 2;
+    }
+    char **nargs=calloc((size_t)argc+5,sizeof(char*));
+    if(!nargs)return 1;
+    int n=0;
+    if(IsWindows()) {
+      nargs[n++]="sh.exe";
+      nargs[n++]="-c";
+      nargs[n++]=WINDOWS_SHELL_RESET "\"$0\" \"$@\"; result=$?; exit \"$result\"";
+    }
+    nargs[n++]=node;
+    for(int i=2;i<argc;i++)nargs[n++]=argv[i];
+    nargs[n]=NULL;
+    rc=run_external(nargs);
+    free(nargs);
+    return rc;
+  }
   if(!strcmp(argv[1],"rust")) {
-    if(argc<3 || (strcmp(argv[2],"status") && strcmp(argv[2],"rustc") && strcmp(argv[2],"cargo"))) {
-      fputs("Usage: toolchain.com rust status | rust rustc [args] | rust cargo [args]\n",stderr);
+    if(argc<3 || (strcmp(argv[2],"status") && strcmp(argv[2],"rustc") &&
+                  strcmp(argv[2],"cargo") && strcmp(argv[2],"sccache"))) {
+      fputs("Usage: toolchain.com rust status | rust rustc [args] | rust cargo [args] | rust sccache [args]\n",stderr);
       return 2;
     }
     if(!strcmp(argv[2],"status"))return rust_status();
   }
   int is_rust=!strcmp(argv[1],"rust");
-  if(is_rust && rust_source_available())return 1;
+  int is_sccache=is_rust && !strcmp(argv[2],"sccache");
+  if(is_rust && !is_sccache && rust_source_available())return 1;
   int rc;
   if(is_rust && (rc=rust_host_available()))return rc;
   char self[4096],compiler[4096];
@@ -256,6 +308,28 @@ int embedded_sdk_main(int argc,char **argv) {
       return 2;
     }
     int is_cargo=!strcmp(argv[2],"cargo");
+    if (is_sccache) {
+      char sccache_path[4096];
+      if(snprintf(sccache_path,sizeof(sccache_path),"%s/bin/sccache%s",sysroot,IsWindows()?".exe":"")>=(int)sizeof(sccache_path) ||
+         access(sccache_path,X_OK)) {
+        fputs("sccache not packaged for this host\\n",stderr);
+        return 2;
+      }
+      char **sargs=calloc((size_t)argc+2,sizeof(char*));
+      if(!sargs)return 1;
+      int n=0;
+      if(IsWindows()) {
+        sargs[n++]="sh.exe";
+        sargs[n++]="-c";
+        sargs[n++]=WINDOWS_SHELL_RESET "\"$0\" \"$@\"; result=$?; exit \"$result\"";
+      }
+      sargs[n++]=sccache_path;
+      for(int i=3;i<argc;i++)sargs[n++]=argv[i];
+      sargs[n]=NULL;
+      rc=run_external(sargs);
+      free(sargs);
+      return rc;
+    }
     if(is_cargo && access(cargo,X_OK)) {
       fputs("Cargo not packaged; set RUST_COMPILER_ROOT with bin/cargo\\n",stderr);
       return 2;
@@ -265,6 +339,13 @@ int embedded_sdk_main(int argc,char **argv) {
       if(snprintf(rustdoc,sizeof(rustdoc),"%s/bin/rustdoc%s",sysroot,IsWindows()?".exe":"")>=(int)sizeof(rustdoc))return 1;
       if(setenv("RUSTC",rustc,1) || setenv("RUSTDOC",rustdoc,1)) {
         perror("set packaged Rust tools");return 1;
+      }
+      if(!getenv("RUSTC_WRAPPER")) {
+        char sccache_path[4096];
+        if(snprintf(sccache_path,sizeof(sccache_path),"%s/bin/sccache%s",sysroot,IsWindows()?".exe":"")<(int)sizeof(sccache_path) &&
+           !access(sccache_path,X_OK) && setenv("RUSTC_WRAPPER",sccache_path,1)) {
+          perror("set packaged sccache wrapper");return 1;
+        }
       }
     }
     char **rargs=calloc((size_t)argc+7,sizeof(char*));

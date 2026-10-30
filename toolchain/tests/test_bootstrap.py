@@ -10,10 +10,13 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "toolchain"))
-from bootstrap import RUST_NOTICES, RUST_HOSTS, ELF_TARGETS, bootstrap_machin, bootstrap_sdk, bootstrap_rust, load_pins, stage_rust, rust_hosts
+from bootstrap import (NODEJS_RELEASE_HOSTS, RUST_NOTICES, RUST_HOSTS, ELF_TARGETS,
+                       add_sccache, bootstrap_machin, bootstrap_nodejs,
+                       bootstrap_sdk, bootstrap_rust, load_pins, nodejs_hosts,
+                       stage_rust, rust_hosts)
 from provenance import describe_tree
 from file_metadata import tree_sha256
-from rust_fixtures import make_sysroot
+from rust_fixtures import binary_fixture, make_sysroot
 
 
 class BootstrapTest(unittest.TestCase):
@@ -49,6 +52,13 @@ class BootstrapTest(unittest.TestCase):
     def test_floating_minor_go_version_is_rejected(self):
         value = json.loads(self.lock.read_text())
         value["go_version"] = "1.23"
+        self.lock.write_text(json.dumps(value))
+        with self.assertRaises(ValueError):
+            load_pins(self.root)
+
+    def test_floating_minor_nodejs_version_is_rejected(self):
+        value = json.loads(self.lock.read_text())
+        value["nodejs"]["version"] = "26.13"
         self.lock.write_text(json.dumps(value))
         with self.assertRaises(ValueError):
             load_pins(self.root)
@@ -217,11 +227,107 @@ class BootstrapTest(unittest.TestCase):
             source = make_sysroot(home / "toolchains", host)
             source.rename(home / "toolchains" / command[3])
             return subprocess.CompletedProcess(command, 0)
+        def asset_download(asset, destination, root):
+            import tarfile
+            with tarfile.open(destination, "w:gz") as archive:
+                prefix = "sccache-v" + asset["version"] + "-fixture"
+                binary = "sccache.exe" if "windows" in asset["archive"] else "sccache"
+                for name, data in ((prefix + "/" + binary, b"sccache"),
+                                   (prefix + "/LICENSE", b"license")):
+                    info = tarfile.TarInfo(name)
+                    info.size = len(data)
+                    info.mode = 0o755 if name.endswith("sccache") else 0o644
+                    archive.addfile(info, __import__("io").BytesIO(data))
+            from file_metadata import sha256
+            asset["sha256"] = sha256(destination)
         with patch("bootstrap.shutil.which", return_value="/usr/bin/rustup"), \
-             patch("bootstrap.subprocess.run", side_effect=install) as run:
+             patch("bootstrap.subprocess.run", side_effect=install) as run, \
+             patch("bootstrap.download_sccache_asset", side_effect=asset_download):
             bootstrap_rust(destination, pins)
         self.assertEqual(run.call_count, len(RUST_HOSTS))
         self.assertEqual(rust_hosts(destination), list(RUST_HOSTS))
+        for host in RUST_HOSTS:
+            name = "sccache.exe" if "windows" in host else "sccache"
+            self.assertEqual((destination / "hosts" / host / "sysroot/bin" / name).read_bytes(), b"sccache")
+        record = json.loads((destination / ".toolchain-bootstrap.json").read_text())
+        self.assertEqual(record["sccache"]["version"], "0.18.0")
+        self.assertEqual(record["sccache"]["revision"], "01c35e69b97f516c2ebfbdb418b5cd6277bde280")
+
+    def test_sccache_addition_refuses_existing_files(self):
+        sources = {host: self.rust_sysroot(host) for host in RUST_HOSTS}
+        destination = self.root / "multi-host-sccache"
+        stage_rust(sources, destination, load_pins(self.root))
+        existing = destination / "hosts" / RUST_HOSTS[0] / "sysroot/bin/sccache"
+        existing.write_text("keep")
+        def asset_download(asset, destination, root):
+            import tarfile
+            from file_metadata import sha256
+            with tarfile.open(destination, "w:gz") as archive:
+                prefix = "sccache-v" + asset["version"] + "-fixture"
+                binary = "sccache.exe" if "windows" in asset["archive"] else "sccache"
+                for name, data in ((prefix + "/" + binary, b"sccache"),
+                                   (prefix + "/LICENSE", b"license")):
+                    info = tarfile.TarInfo(name)
+                    info.size = len(data)
+                    info.mode = 0o755 if name.endswith(binary) else 0o644
+                    archive.addfile(info, __import__("io").BytesIO(data))
+            asset["sha256"] = sha256(destination)
+        with patch("bootstrap.download_sccache_asset", side_effect=asset_download), self.assertRaises(FileExistsError):
+            add_sccache(destination, load_pins(self.root))
+        self.assertEqual(existing.read_text(), "keep")
+
+    def test_nodejs_bootstrap_stages_verified_native_hosts_and_licenses(self):
+        destination = self.root / "nodejs"
+        pins = load_pins(self.root)
+
+        def asset_download(asset, archive, root):
+            data = binary_fixture(next(host for host, value in pins["nodejs"]["assets"].items()
+                                       if value["archive"] == asset["archive"]))
+            if archive.suffix == ".zip":
+                import zipfile
+                with zipfile.ZipFile(archive, "w") as bundle:
+                    bundle.writestr("node-fixture/node.exe", data)
+                    bundle.writestr("node-fixture/LICENSE", b"node license")
+            else:
+                import io
+                import tarfile
+                with tarfile.open(archive, "w:xz") as bundle:
+                    for name, value in (("node-fixture/bin/node", data),
+                                        ("node-fixture/LICENSE", b"node license")):
+                        info = tarfile.TarInfo(name)
+                        info.size = len(value)
+                        bundle.addfile(info, io.BytesIO(value))
+            from file_metadata import sha256
+            asset["sha256"] = sha256(archive)
+
+        def license_download(license_pin, destination, root):
+            destination.write_bytes(b"node license")
+            from file_metadata import sha256
+            license_pin["sha256"] = sha256(destination)
+
+        with patch("bootstrap.download_nodejs_asset", side_effect=asset_download), \
+             patch("bootstrap.download_nodejs_license", side_effect=license_download):
+            bootstrap_nodejs(destination, pins, self.root)
+        self.assertEqual(nodejs_hosts(destination), list(NODEJS_RELEASE_HOSTS))
+        for host in NODEJS_RELEASE_HOSTS:
+            suffix = ".exe" if "windows" in host else ""
+            self.assertEqual((destination / "hosts" / host / "bin" / ("node" + suffix)).read_bytes(),
+                             binary_fixture(host))
+            self.assertEqual((destination / "hosts" / host / "share/doc/nodejs/LICENSE").read_bytes(),
+                             b"node license")
+        record = json.loads((destination / ".toolchain-bootstrap.json").read_text())
+        self.assertEqual(record["nodejs"]["version"], "26.13.0")
+        self.assertEqual(record["tree_sha256"], tree_sha256(destination))
+
+    def test_nodejs_bootstrap_refuses_existing_destination(self):
+        destination = self.root / "nodejs"
+        destination.mkdir()
+        marker = destination / "valuable"
+        marker.write_text("keep")
+        with patch("bootstrap.download_nodejs_asset") as download, self.assertRaises(FileExistsError):
+            bootstrap_nodejs(destination, load_pins(self.root), self.root)
+        download.assert_not_called()
+        self.assertEqual(marker.read_text(), "keep")
 
 
 class FileMetadataTest(unittest.TestCase):

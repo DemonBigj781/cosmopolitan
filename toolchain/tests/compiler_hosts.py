@@ -66,8 +66,11 @@ def check_host(toolchain, build_manifest, resources, output, commit, expected_os
                      architecture + ("-apple-darwin" if system == "Darwin" else "-unknown-linux-gnu"))
         if rust_host not in build["inputs"]["rust_compiler"]["hosts"]:
             raise ValueError("Rust payload missing for compiler-test host: " + rust_host)
+        if rust_host not in build["inputs"]["nodejs"]["hosts"]:
+            raise ValueError("Node.js payload missing for compiler-test host: " + rust_host)
         result["rust_compiler_host"] = rust_host
         result["rust_compiler_supported"] = True
+        result["nodejs_host"] = rust_host
         result["toolchain_execution"] = ("x64-emulated" if system == "Windows" and
             architecture == "aarch64" and windows_machine(toolchain) == "x86_64" else "native")
         validate_bundle(resources, commit)
@@ -91,6 +94,7 @@ def check_host(toolchain, build_manifest, resources, output, commit, expected_os
             ("cc-version", ["cc", "--version"], ""),
             ("rustc-version", ["rust", "rustc", "--version"], ""),
             ("cargo-version", ["rust", "cargo", "--version"], ""),
+            ("node-expression", ["node", "-p", "6 * 7"], "42"),
         ]
         for name, arguments, marker in checks:
             record = {"name": name, "passed": False, "supported": True}

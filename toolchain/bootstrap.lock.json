@@ -4,5 +4,62 @@
     "repository": "https://github.com/javimosch/machin.git",
     "revision": "9e0fb93e17c43d7ed047df80aa881037286aaae4"
   },
-  "rust_linker_probe": "1.99.1"
+  "nodejs": {
+    "repository": "https://github.com/nodejs/node.git",
+    "version": "26.13.0",
+    "license": {
+      "url": "https://raw.githubusercontent.com/nodejs/node/v26.13.0/LICENSE",
+      "sha256": "8e603aa87c70d36e497004f0dec63111511cb61b7d65ace12e10ea791599286c"
+    },
+    "assets": {
+      "x86_64-unknown-linux-gnu": {
+        "archive": "node-v26.13.0-linux-x64.tar.xz",
+        "sha256": "d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997"
+      },
+      "aarch64-unknown-linux-gnu": {
+        "archive": "node-v26.13.0-linux-arm64.tar.xz",
+        "sha256": "406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92"
+      },
+      "x86_64-apple-darwin": {
+        "archive": "node-v26.13.0-darwin-x64.tar.xz",
+        "sha256": "8bd636bc981a92e1ab930c02340eece2076eb1aaf94d14e421cdeeddc1292298"
+      },
+      "aarch64-apple-darwin": {
+        "archive": "node-v26.13.0-darwin-arm64.tar.xz",
+        "sha256": "6f5b3187d9df9fc007e881167905bc7d69ad26450ddc377c83d63256a2495b6e"
+      },
+      "x86_64-pc-windows-msvc": {
+        "archive": "node-v26.13.0-win-x64.zip",
+        "sha256": "dcc60d59a0746999f99064a01c020445d54d84228c691cdbf25b49ac3b59150a"
+      }
+    }
+  },
+  "rust_linker_probe": "1.99.1",
+  "sccache": {
+    "repository": "https://github.com/mozilla/sccache.git",
+    "revision": "01c35e69b97f516c2ebfbdb418b5cd6277bde280",
+    "version": "0.18.0",
+    "assets": {
+      "x86_64-unknown-linux-gnu": {
+        "archive": "sccache-v0.18.0-x86_64-unknown-linux-musl.tar.gz",
+        "sha256": "45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89"
+      },
+      "aarch64-unknown-linux-gnu": {
+        "archive": "sccache-v0.18.0-aarch64-unknown-linux-musl.tar.gz",
+        "sha256": "2b3284d5da3b46a47dc4229e75bb7b88ac4aa99c8d754fb7d2f84997e5a4354a"
+      },
+      "x86_64-apple-darwin": {
+        "archive": "sccache-v0.18.0-x86_64-apple-darwin.tar.gz",
+        "sha256": "1dade83cc49eeb42337565eccd534b05982820a8e44b851bd7937467a18c7aef"
+      },
+      "aarch64-apple-darwin": {
+        "archive": "sccache-v0.18.0-aarch64-apple-darwin.tar.gz",
+        "sha256": "308184519b646f5125289e8515b36f6ca65a13a041923994aebe702348674e8e"
+      },
+      "x86_64-pc-windows-msvc": {
+        "archive": "sccache-v0.18.0-x86_64-pc-windows-msvc.tar.gz",
+        "sha256": "1a63c1be2beab3f04d27e4cc145443e092e02d3dd83a51030989829d7023091b"
+      }
+    }
+  }
 }
