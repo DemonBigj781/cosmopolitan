@@ -211,10 +211,12 @@ python3 toolchain/attach_sdk.py \
   --sdk o/toolchain/compiler-payload/cosmocc-sdk.zip \
   --output o/toolchain/compiler-payload/toolchain-with-sdk.com \
   --zipcopy "$COSMOCC_ROOT/bin/zipcopy"
-o/toolchain/compiler-payload/toolchain-with-sdk.com selftest
-test "$(o/toolchain/compiler-payload/toolchain-with-sdk.com lua -e 'print(6 * 7)')" = 42
+APE_LOADER="$COSMOCC_ROOT/bin/ape-x86_64.elf"
+test -x "$APE_LOADER" || { echo "Cosmopolitan x86-64 APE loader missing from SDK" >&2; exit 1; }
+COSMO_APE_LOADER="$APE_LOADER" "$APE_LOADER" o/toolchain/compiler-payload/toolchain-with-sdk.com selftest
+test "$(COSMO_APE_LOADER="$APE_LOADER" "$APE_LOADER" o/toolchain/compiler-payload/toolchain-with-sdk.com lua -e 'print(6 * 7)')" = 42
 if [[ -n "$MACHIN_OBJECT" ]]; then
-  o/toolchain/compiler-payload/toolchain-with-sdk.com machin-compiler --full toolchain/machin_demo.mfl > o/toolchain/combined-machin-demo.c
+  COSMO_APE_LOADER="$APE_LOADER" "$APE_LOADER" o/toolchain/compiler-payload/toolchain-with-sdk.com machin-compiler --full toolchain/machin_demo.mfl > o/toolchain/combined-machin-demo.c
   test -s o/toolchain/combined-machin-demo.c
   grep -q 'main' o/toolchain/combined-machin-demo.c
   echo 'PASS: self-hosted Machin and compiler SDK share one APE'

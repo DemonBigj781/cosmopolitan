@@ -87,11 +87,12 @@ jobs:
         run: |
           set -euo pipefail
           APE=o/toolchain/compiler-payload/toolchain-with-sdk.com
-          "$APE" rust status | tee /tmp/rust-sdk-status.txt
+          APE_LOADER=/tmp/cosmocc/bin/ape-x86_64.elf
+          COSMO_APE_LOADER="$APE_LOADER" "$APE_LOADER" "$APE" rust status | tee /tmp/rust-sdk-status.txt
           grep -Fx 'Patched Rust-APE SDK: packaged' /tmp/rust-sdk-status.txt
-           "$APE" rust cargo --version
-          test "$("$APE" node -p '6 * 7')" = 42
-          "$APE" machin build toolchain/machin_demo.mfl -o /tmp/machin-embed-regression.com
+          COSMO_APE_LOADER="$APE_LOADER" "$APE_LOADER" "$APE" rust cargo --version
+          test "$(COSMO_APE_LOADER="$APE_LOADER" "$APE_LOADER" "$APE" node -p '6 * 7')" = 42
+          COSMO_APE_LOADER="$APE_LOADER" "$APE_LOADER" "$APE" machin build toolchain/machin_demo.mfl -o /tmp/machin-embed-regression.com
           /tmp/machin-embed-regression.com | grep -Fx 'Machin linked into Cosmopolitan APE'
       - name: Prepare shared smoke-test artifact
         run: |

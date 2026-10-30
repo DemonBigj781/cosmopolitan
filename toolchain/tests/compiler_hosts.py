@@ -22,6 +22,8 @@ def check_cargo_project(toolchain, output, loader):
     target = project / "target"
     environment = dict(os.environ, TMPDIR=str(temporary), TMP=str(temporary), TEMP=str(temporary),
                        CARGO_HOME=str(project / "cargo-home"))
+    if loader:
+        environment["COSMO_APE_LOADER"] = str(loader)
     for variable in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"):
         environment.pop(variable, None)
     command = ([str(loader)] if loader else []) + [str(toolchain), "rust", "cargo", "--offline", "check",
@@ -86,6 +88,8 @@ def check_host(toolchain, build_manifest, resources, output, commit, expected_os
         temporary = launch_dir / "temporary"
         temporary.mkdir()
         environment = dict(os.environ, TMPDIR=str(temporary), TMP=str(temporary), TEMP=str(temporary))
+        if loader:
+            environment["COSMO_APE_LOADER"] = str(loader)
         checks = [
             ("version", ["version"], "ape-toolchain"),
             ("selftest", ["selftest"], "PASS"),

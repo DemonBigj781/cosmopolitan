@@ -36,6 +36,8 @@ def probe(toolchain, language, output_dir, ape_loader=None):
     temporary = directory / "temporary"
     temporary.mkdir()
     environment = dict(os.environ, TMPDIR=str(temporary), TMP=str(temporary), TEMP=str(temporary))
+    if ape_loader:
+        environment["COSMO_APE_LOADER"] = str(ape_loader)
     flags, source, expected = PROBES[language]
     binary = directory / "hello.com"
     prefix = [str(ape_loader)] if ape_loader else []

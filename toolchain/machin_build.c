@@ -19,6 +19,17 @@ static int child(char *const args[], const char *stdout_path) {
       if(dup2(fd,STDOUT_FILENO)<0){perror("dup2");_exit(126);}
       close(fd);
     }
+    const char *loader=getenv("COSMO_APE_LOADER");
+    if(loader&&*loader){
+      size_t count=0;
+      while(args[count])count++;
+      char **wrapped=calloc(count+2,sizeof(*wrapped));
+      if(!wrapped){perror("calloc APE loader arguments");_exit(126);}
+      wrapped[0]=(char*)loader;
+      for(size_t i=0;i<count;i++)wrapped[i+1]=args[i];
+      execv(loader,wrapped);
+      perror("execv APE loader");_exit(127);
+    }
     execv(args[0],args);
     perror("execv");_exit(127);
   }

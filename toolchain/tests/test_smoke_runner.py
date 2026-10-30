@@ -67,6 +67,7 @@ class SmokeRunnerTest(unittest.TestCase):
         self.assertTrue(result["passed"])
         for call in mocked.call_args_list:
             self.assertEqual(call.args[0][0], "/ape")
+        self.assertEqual(mocked.call_args_list[0].kwargs["env"]["COSMO_APE_LOADER"], "/ape")
 
     def test_existing_evidence_is_not_overwritten(self):
         self.run_probe()

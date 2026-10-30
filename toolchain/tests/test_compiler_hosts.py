@@ -27,6 +27,8 @@ class CompilerHostsTest(unittest.TestCase):
 
     def check(self, failure=None, system="Linux", arch="x86_64", unsupported_message=None):
         def run(command, **kwargs):
+            if command[0] == "/loader":
+                self.assertEqual(kwargs["env"]["COSMO_APE_LOADER"], "/loader")
             if unsupported_message and "rust" in command and command[-1] == "--version":
                 kwargs["stderr"].write(unsupported_message)
                 return subprocess.CompletedProcess(command, 126)
@@ -115,6 +117,7 @@ class CargoHostTest(unittest.TestCase):
                 def run(command, **kwargs):
                     self.assertIn("--offline", command)
                     self.assertNotIn("RUSTC_WRAPPER", kwargs["env"])
+                    self.assertEqual(kwargs["env"]["COSMO_APE_LOADER"], "/loader")
                     kwargs["stdout"].write("SDK materialized: Rust (fixture)\n")
                     if produce_metadata:
                         target = Path(command[command.index("--target-dir") + 1]) / "debug/deps"
