@@ -211,7 +211,6 @@ python3 toolchain/attach_sdk.py \
   --sdk o/toolchain/compiler-payload/cosmocc-sdk.zip \
   --output o/toolchain/compiler-payload/toolchain-with-sdk.com \
   --zipcopy "$COSMOCC_ROOT/bin/zipcopy"
-python3 toolchain/provenance.py o/toolchain/compiler-payload/toolchain-with-sdk.com
 o/toolchain/compiler-payload/toolchain-with-sdk.com selftest
 test "$(o/toolchain/compiler-payload/toolchain-with-sdk.com lua -e 'print(6 * 7)')" = 42
 if [[ -n "$MACHIN_OBJECT" ]]; then
@@ -220,4 +219,5 @@ if [[ -n "$MACHIN_OBJECT" ]]; then
   grep -q 'main' o/toolchain/combined-machin-demo.c
   echo 'PASS: self-hosted Machin and compiler SDK share one APE'
 fi
+python3 toolchain/provenance.py o/toolchain/compiler-payload/toolchain-with-sdk.com
 echo 'NOTE: SDK commands extract temporary files and run compiler subprocesses; compiler portability is not implied.'

@@ -56,6 +56,21 @@ class BuildRecipeTest(unittest.TestCase):
                     package_makefile,
                 )
 
+    def test_provenance_is_recorded_after_package_time_execution(self):
+        script = PACKAGE_SCRIPT.read_text()
+        provenance = script.index(
+            "python3 toolchain/provenance.py "
+            "o/toolchain/compiler-payload/toolchain-with-sdk.com"
+        )
+
+        for command in (
+            "o/toolchain/compiler-payload/toolchain-with-sdk.com selftest",
+            "o/toolchain/compiler-payload/toolchain-with-sdk.com lua -e 'print(6 * 7)'",
+            "o/toolchain/compiler-payload/toolchain-with-sdk.com machin-compiler --full",
+        ):
+            with self.subTest(command=command):
+                self.assertLess(script.index(command), provenance)
+
     def test_machin_link_uses_repository_make_for_both_architectures(self):
         script = MACHIN_LINK_SCRIPT.read_text()
 
