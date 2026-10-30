@@ -34,6 +34,13 @@ class BootstrapTest(unittest.TestCase):
             'pub const COSMOCC_SHA256: &str =\n    "' + 'a' * 64 + '";\n')
         (self.upstream / "rust-toolchain.toml").write_text(
             '[toolchain]\nchannel = "nightly-2026-07-28"\n')
+        self.makefile = self.root / "Makefile"
+        self.makefile.write_text(
+            "COSMOCC = .cosmocc/4.0.2\n"
+            "DOWNLOAD := $(shell build/download-cosmocc.sh $(COSMOCC) 4.0.2 "
+            + "a" * 64
+            + ")\n"
+        )
 
     def test_pins_reuse_vendored_sdk_definitions(self):
         pins = load_pins(self.root)
@@ -67,6 +74,16 @@ class BootstrapTest(unittest.TestCase):
         path = self.upstream / "xtask/src/config.rs"
         path.write_text(path.read_text() + 'pub const COSMOCC_VERSION: &str = "4.0.2";\n')
         with self.assertRaises(ValueError):
+            load_pins(self.root)
+
+    def test_make_bootstrap_pin_must_match_canonical_sdk_pin(self):
+        self.makefile.write_text(
+            "COSMOCC = .cosmocc/3.9.2\n"
+            "DOWNLOAD := $(shell build/download-cosmocc.sh $(COSMOCC) 3.9.2 "
+            + "b" * 64
+            + ")\n"
+        )
+        with self.assertRaisesRegex(ValueError, "Makefile Cosmocc pin"):
             load_pins(self.root)
 
     def test_existing_sdk_is_not_silently_trusted_or_overwritten(self):

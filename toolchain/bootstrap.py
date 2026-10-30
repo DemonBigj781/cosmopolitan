@@ -44,6 +44,18 @@ def load_pins(root=ROOT):
         if len(matches) != 1:
             raise ValueError(f"Expected one COSMOCC_{key.upper()} declaration")
         sdk[key] = matches[0]
+    makefile = (root / "Makefile").read_text()
+    make_versions = re.findall(r"^COSMOCC\s*=\s*\.cosmocc/(\S+)\s*$", makefile, re.M)
+    make_downloads = re.findall(
+        r"^DOWNLOAD\s*:=\s*\$\(shell build/download-cosmocc\.sh "
+        r"\$\(COSMOCC\) (\S+) ([0-9a-f]{64})\)\s*$",
+        makefile,
+        re.M,
+    )
+    if len(make_versions) != 1 or len(make_downloads) != 1:
+        raise ValueError("Expected one Makefile Cosmocc pin")
+    if make_versions[0] != sdk["version"] or make_downloads[0] != (sdk["version"], sdk["sha256"]):
+        raise ValueError("Makefile Cosmocc pin does not match canonical SDK pin")
     pins["cosmocc"] = sdk
     pins["rust_nightly"] = tomllib.loads((upstream / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     for version in (pins["go_version"], pins["rust_linker_probe"], sdk["version"]):
