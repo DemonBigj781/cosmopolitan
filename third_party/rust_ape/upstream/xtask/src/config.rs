@@ -54,7 +54,6 @@ pub const PATCHED_CRATES: &[(&str, &str)] = &[
 pub const COSMOCC_VERSION: &str = "4.0.2";
 pub const COSMOCC_SHA256: &str =
     "85b8c37a406d862e656ad4ec14be9f6ce474c1b436b9615e91a55208aced3f44";
-pub const COSMOCC_BASE_URL: &str = "https://cosmo.zip/pub/cosmocc/";
 
 /// (target triple, cosmocc's arch prefix). Templates live in targets/<triple>.json
 /// and setup renders them into generated/.
@@ -76,5 +75,11 @@ pub fn crate_url(name: &str, version: &str) -> String {
 }
 
 pub fn cosmocc_url() -> &'static str {
-    concat_strs!(COSMOCC_BASE_URL, "cosmocc-", COSMOCC_VERSION, ".zip")
+    concat_strs!(
+        "https://github.com/jart/cosmopolitan/releases/download/",
+        COSMOCC_VERSION,
+        "/cosmocc-",
+        COSMOCC_VERSION,
+        ".zip"
+    )
 }

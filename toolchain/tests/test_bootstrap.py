@@ -49,6 +49,15 @@ class BootstrapTest(unittest.TestCase):
         self.assertEqual(pins["rust_nightly"], "nightly-2026-07-28")
         self.assertEqual(pins["go_version"], "1.23.12")
 
+    def test_vendored_rust_sdk_uses_official_github_cosmocc_release(self):
+        config = (ROOT / "third_party/rust_ape/upstream/xtask/src/config.rs").read_text()
+
+        self.assertIn(
+            '"https://github.com/jart/cosmopolitan/releases/download/"',
+            config,
+        )
+        self.assertNotIn('"https://cosmo.zip/pub/cosmocc/"', config)
+
     def test_mutable_source_revision_is_rejected(self):
         value = json.loads(self.lock.read_text())
         value["machin"]["revision"] = "main"
