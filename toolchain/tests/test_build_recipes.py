@@ -34,6 +34,7 @@ class BuildRecipeTest(unittest.TestCase):
             "embedded-sdk-driver",
             "native_zip",
             "machin_build",
+            "project_manifest",
             "rust_build",
             "tempdir",
         ):

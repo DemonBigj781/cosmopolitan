@@ -42,7 +42,11 @@ int embedded_sdk_cleanup(void) {
   return rc;
 }
 
-static int materialize(const char *self,enum SdkComponent component) {
+const char *embedded_sdk_root(void) {
+  return sdk_temp.fd==-1 ? NULL : sdk_temp.path;
+}
+
+int embedded_sdk_materialize(const char *self,enum SdkComponent component) {
   unsigned bit=1u<<component;
   if(sdk_loaded&bit)return 0;
   if(sdk_temp.fd==-1 && toolchain_temp_open(&sdk_temp,"cosmo-sdk")) {
@@ -53,7 +57,8 @@ static int materialize(const char *self,enum SdkComponent component) {
     fputs("SDK extraction failed\n",stderr); return 1;
   }
   sdk_loaded|=bit;
-  const char *name=component==SDK_C?"C":component==SDK_RUST?"Rust":"Node.js";
+  const char *name=component==SDK_C?"C":component==SDK_RUST?"Rust":
+                   component==SDK_NODEJS?"Node.js":component==SDK_WEBGPU?"WebGPU":"SDK";
   fprintf(stderr,"SDK materialized: %s (%s)\n",name,sdk_temp.path);
   return 0;
 }
@@ -144,6 +149,23 @@ static int run_external(char *const argv[]) {
   rc=run(args);
 done:
   for(int i=0;i<count;i++)free(args[i]);
+  free(args);
+  return rc;
+}
+int embedded_sdk_run_script(char *const argv[]) {
+  int count=0,rc;
+  while(argv[count])count++;
+  char **args=calloc((size_t)count+5,sizeof(char*));
+  if(!args)return 1;
+  int n=0;
+  args[n++]=IsWindows()?"sh.exe":"sh";
+  if(IsWindows()) {
+    args[n++]="-c";
+    args[n++]=WINDOWS_SHELL_RESET "\"$0\" \"$@\"; result=$?; exit \"$result\"";
+  }
+  for(int i=0;i<count;i++)args[n++]=argv[i];
+  args[n]=NULL;
+  rc=run_external(args);
   free(args);
   return rc;
 }
@@ -268,7 +290,7 @@ int embedded_sdk_main(int argc,char **argv) {
     if(rc)return rc;
     char self[4096],node[4096];
     if(!realpath(argv[0],self)) { perror("resolve executable"); return 1; }
-    if(materialize(self,SDK_NODEJS) || nodejs_path(sdk_temp.path,node))return 1;
+    if(embedded_sdk_materialize(self,SDK_NODEJS) || nodejs_path(sdk_temp.path,node))return 1;
     if(access(node,X_OK)) {
       fputs("Node.js executable missing after SDK extraction\n",stderr);
       return 2;
@@ -303,7 +325,7 @@ int embedded_sdk_main(int argc,char **argv) {
   if(is_rust && (rc=rust_host_available()))return rc;
   char self[4096],compiler[4096];
   if(!realpath(argv[0],self)) { perror("resolve executable"); return 1; }
-  rc=materialize(self,is_rust?SDK_RUST:SDK_C);
+  rc=embedded_sdk_materialize(self,is_rust?SDK_RUST:SDK_C);
   if(rc)return rc;
   const char *tmp=sdk_temp.path;
   if (is_rust) {

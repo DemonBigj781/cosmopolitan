@@ -25,9 +25,9 @@ ensure_archive_members() {
 # object rules. MODE must match each target tree so make applies the correct
 # compiler, flags, dependencies, and archive recipes.
 # shellcheck disable=SC2086
-"$COSMO_MAKE" -s -j1 MODE= $LUA_DEPS o//toolchain/lua_entry.o
+"$COSMO_MAKE" -s -j1 MODE= $LUA_DEPS o//toolchain/lua_entry.o o//tool/net/ljson.o
 # shellcheck disable=SC2086
-"$COSMO_MAKE" -s -j1 MODE=aarch64 $ARM_LUA_DEPS o/aarch64/toolchain/lua_entry.o
+"$COSMO_MAKE" -s -j1 MODE=aarch64 $ARM_LUA_DEPS o/aarch64/toolchain/lua_entry.o o/aarch64/tool/net/ljson.o
 
 # A stale empty archive can be considered up to date by make after an
 # interrupted or partial cross-architecture build. It omits startup objects
@@ -51,6 +51,10 @@ done
 
 mkdir -p o/toolchain/.aarch64
 cp o/aarch64/toolchain/lua_entry.o o/toolchain/.aarch64/lua_entry.o
+mkdir -p o/tool/net/.aarch64
+cp o/aarch64/tool/net/ljson.o o/tool/net/.aarch64/ljson.o
 test -s o/toolchain/lua_entry.o
 test -s o/toolchain/.aarch64/lua_entry.o
+test -s o//tool/net/ljson.o
+test -s o/tool/net/.aarch64/ljson.o
 printf '%s\n' "$LUA_DEPS"

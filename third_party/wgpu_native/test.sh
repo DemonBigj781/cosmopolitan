@@ -13,10 +13,11 @@ if [[ ${1:-} == --software ]]; then
 fi
 cd -- "$webgpu_out"
 sha256sum --check --strict SHA256SUMS
-# Use the explicit loader on Linux so execution never changes the .exe.
-timeout 60s ./ape-x86_64.elf ./webgpu_compute.exe --version
+# Use the explicit loader on Linux so execution always uses the packaged APE.
+timeout 60s ./ape-x86_64.elf ./webgpu_compute --version
 if [[ ${1:-} != --version ]]; then
-  timeout 180s ./ape-x86_64.elf ./webgpu_compute.exe "${webgpu_args[@]}"
-  timeout 180s ./ape-x86_64.elf ./webgpu_compute.exe "${webgpu_args[@]}" --matmul
+  timeout 180s ./ape-x86_64.elf ./webgpu_compute "${webgpu_args[@]}"
+  timeout 180s ./ape-x86_64.elf ./webgpu_compute "${webgpu_args[@]}" --matmul
+  timeout 180s ./ape-x86_64.elf ./webgpu_compute "${webgpu_args[@]}" --raster
 fi
 sha256sum --check --strict SHA256SUMS

@@ -82,7 +82,8 @@ jobs:
           root = Path('o/webgpu')
           manifest = json.loads((root / 'BUILD.json').read_text())
           assert manifest['embedded_software_vulkan'] is True
-          data = (root / 'webgpu_compute.exe').read_bytes()
+          assert 'rgba8-triangle-raster' in manifest['verified_workloads']
+          data = (root / 'webgpu_compute').read_bytes()
           assert data[:2] == b'MZ'
           pe, = struct.unpack_from('<I', data, 0x3c)
           assert data[pe:pe + 4] == b'PE\0\0'
@@ -94,11 +95,11 @@ jobs:
           cp LICENSE o/webgpu/LICENSE.cosmopolitan
           cp third_party/wgpu_native/tests/run_isolated.py o/webgpu/run_isolated.py
           cd o/webgpu
-          sha256sum webgpu_compute.exe ape-x86_64.elf BUILD.json \
+          sha256sum webgpu_compute ape-x86_64.elf BUILD.json \
             LICENSE.cosmopolitan run_isolated.py > SHA256SUMS
           read -r executable_sha256 _ < SHA256SUMS
           printf 'executable_sha256=%s\n' "$executable_sha256" >> "$GITHUB_OUTPUT"
-          file webgpu_compute.exe
+          file webgpu_compute
           {
             echo '### One executable with an embedded CPU Vulkan implementation'
             echo
@@ -112,7 +113,7 @@ jobs:
         with:
           name: webgpu-cpu-ape-x86_64
           path: |
-            o/webgpu/webgpu_compute.exe
+            o/webgpu/webgpu_compute
             o/webgpu/ape-x86_64.elf
             o/webgpu/SHA256SUMS
             o/webgpu/BUILD.json
@@ -130,7 +131,7 @@ jobs:
           name: webgpu-cpu-build-diagnostics
           path: |
             o/webgpu/build.log
-            o/webgpu/webgpu_compute.com.dbg
+            o/webgpu/webgpu_compute.dbg
             o/llvm-cosmo/*.log
             o/llvm-cosmo/llvm_jit_probe.exe
             o/llvm-cosmo/llvm_jit_probe.com.dbg
@@ -139,7 +140,7 @@ jobs:
           retention-days: 14
 
   compute-linux:
-    name: Linux CPU compute in an empty filesystem
+    name: Linux CPU compute and raster in an empty filesystem
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -168,7 +169,7 @@ jobs:
           import tempfile
 
           artifact = Path.cwd()
-          source = artifact / 'webgpu_compute.exe'
+          source = artifact / 'webgpu_compute'
           expected = os.environ['EXPECTED_SHA256']
           def sha(path):
               return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -192,7 +193,7 @@ jobs:
               application.chmod(0o755)
               assert not list(runtime.iterdir())
               env = {'PATH': str(commands), 'TMPDIR': str(runtime), 'LANG': 'C',
-                     'LC_ALL': 'C', 'TZ': 'UTC', 'LP_NUM_THREADS': '2',
+                     'LC_ALL': 'C', 'TZ': 'UTC',
                      'COSMO_WGPU_TRACE': '1', 'MESA_SHADER_CACHE_DISABLE': 'true'}
               log = logs / 'matmul.log'
               with log.open('w') as output:
@@ -213,20 +214,20 @@ jobs:
               (logs / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
           PY
 
-      - name: Execute both shaders with no Mesa libraries or compiler available
+      - name: Execute compute and raster shaders with no Mesa libraries or compiler available
         working-directory: artifact
         shell: bash
         run: |
           set -euo pipefail
           sha256sum --check --strict SHA256SUMS
-          printf '%s  webgpu_compute.exe\n' "$EXPECTED_SHA256" | sha256sum --check --strict -
-          chmod +x ape-x86_64.elf webgpu_compute.exe
+          printf '%s  webgpu_compute\n' "$EXPECTED_SHA256" | sha256sum --check --strict -
+          chmod +x ape-x86_64.elf webgpu_compute
           sudo python3 run_isolated.py --artifact-dir "$PWD"
           sha256sum --check --strict SHA256SUMS
           {
-            echo '### Embedded CPU compute passed on Linux'
+            echo '### Embedded CPU compute and raster passed on Linux'
             echo
-            echo 'Collatz and tiled f32 matrix multiplication ran inside a temporary empty root.'
+            echo 'Collatz, tiled f32 matrix multiplication, and triangle rasterization ran inside temporary empty roots.'
             echo 'That root contained the application, its APE loader, and writable temporary storage.'
             echo 'No Vulkan driver, shared libraries, shader files, or target compiler were present.'
             echo 'A separate check bootstrapped from the application file and its bundled APE loader.'
@@ -244,14 +245,13 @@ jobs:
           retention-days: 14
 
   compute-windows:
-    name: Windows CPU compute with the identical APE
+    name: Windows CPU compute and raster with the identical APE
     needs: build
     runs-on: windows-2022
     timeout-minutes: 15
     env:
       EXPECTED_SHA256: ${{ needs.build.outputs.executable_sha256 }}
       COSMO_WGPU_TRACE: 1
-      LP_NUM_THREADS: 2
       MESA_SHADER_CACHE_DISABLE: 'true'
     steps:
       - name: Download the application compiled by the build job
@@ -296,10 +296,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $expected = $env:EXPECTED_SHA256.ToLowerInvariant()
-          $before = (Get-FileHash -Algorithm SHA256 .\webgpu_compute.exe).Hash.ToLowerInvariant()
+          $before = (Get-FileHash -Algorithm SHA256 .\webgpu_compute).Hash.ToLowerInvariant()
           if ($before -ne $expected) { throw 'Application differs from the Linux build artifact' }
           function Invoke-PortableCheck([string] $name, [string[]] $arguments) {
-            $application = [System.IO.Path]::GetFullPath('.\webgpu_compute.exe')
+            $application = [System.IO.Path]::GetFullPath('.\webgpu_compute')
             $process = Start-Process -FilePath $application -ArgumentList $arguments -PassThru -NoNewWindow `
               -RedirectStandardOutput "$name.stdout.log" -RedirectStandardError "$name.stderr.log"
             try {
@@ -315,9 +315,10 @@ jobs:
           }
           try {
             Invoke-PortableCheck 'startup' @('--version')
-            foreach ($check in @('collatz', 'matmul')) {
+            foreach ($check in @('collatz', 'matmul', 'raster')) {
               $argsForCheck = @('--software')
               if ($check -eq 'matmul') { $argsForCheck += '--matmul' }
+              if ($check -eq 'raster') { $argsForCheck += '--raster' }
               Invoke-PortableCheck $check $argsForCheck
               $output = Get-Content -Raw "$check.log"
               $lines = @($output -split '\r?\n')
@@ -336,7 +337,12 @@ jobs:
                 throw "$check did not report the embedded loader path"
               }
               if ($output.Contains('WebGPU: Vulkan provider=native;')) { throw "$check attempted a native Vulkan provider" }
-              foreach ($marker in @('C -> Rust version check: PASS', 'headless Vulkan compute and readback: PASS')) {
+              $workloadMarker = if ($check -eq 'raster') {
+                'headless Vulkan triangle raster and readback: PASS'
+              } else {
+                'headless Vulkan compute and readback: PASS'
+              }
+              foreach ($marker in @('C -> Rust version check: PASS', $workloadMarker)) {
                 if ($lines -cnotcontains $marker) { throw "$check missing expected evidence: $marker" }
               }
               if ($check -eq 'collatz' -and $lines -cnotcontains 'readback: [0, 1, 7, 2]') {
@@ -346,20 +352,24 @@ jobs:
                 $matrixPass = @($lines | Where-Object { $_ -match '^f32 matrix multiplication: 13x17 \* 17x11; 143 results verified; max error [0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?; shared memory, barriers, and partial tiles: PASS$' })
                 if ($matrixPass.Count -ne 1) { throw 'Missing complete matrix verification result' }
               }
+              if ($check -eq 'raster') {
+                $rasterPass = @($lines | Where-Object { $_ -match '^rasterized triangle: 64x64 RGBA8; [0-9]+ covered pixels; center rgba=\[[0-9]+, [0-9]+, [0-9]+, 255\]; clear corners: PASS$' })
+                if ($rasterPass.Count -ne 1) { throw 'Missing complete triangle raster verification result' }
+              }
             }
           } finally {
-            $after = (Get-FileHash -Algorithm SHA256 .\webgpu_compute.exe).Hash.ToLowerInvariant()
+            $after = (Get-FileHash -Algorithm SHA256 .\webgpu_compute).Hash.ToLowerInvariant()
             if ($after -ne $expected) { throw 'Application changed during execution' }
           }
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value @(
-            '### Embedded CPU compute passed on Windows',
+            '### Embedded CPU compute and raster passed on Windows',
             '',
-            'The same application built on Linux executed Collatz and tiled f32 matrix multiplication.',
+            'The same application built on Linux executed Collatz, tiled f32 matrix multiplication, and triangle rasterization.',
             'It used its embedded lavapipe/LLVM implementation and opened no native Vulkan loader.',
             'This job did not install or download a Vulkan runtime or Mesa driver.'
           )
 
-      - name: Upload Windows compute results
+      - name: Upload Windows compute and raster results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

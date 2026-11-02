@@ -7,27 +7,11 @@ extern int embedded_sdk_main(int argc, char **argv) __attribute__((weak));
 extern int embedded_sdk_cleanup(void) __attribute__((weak));
 extern int machin_entry(int argc, char **argv) __attribute__((weak));
 extern int lua_entry(int argc, char **argv) __attribute__((weak));
+extern int project_manifest_main(int argc, char **argv) __attribute__((weak));
 
 static void usage(const char *name) {
-  printf("Cosmopolitan unified APE toolchain (bootstrap)\n");
-  printf("Usage: %s <command>\n", name);
-  puts("Commands:");
-  puts("  cc           Run packaged Cosmopolitan compiler (experimental)");
-  puts("  c++          Compile and link C++ with packaged libcxx headers/runtime");
-  puts("  rust status  Verify embedded Rust-APE resources");
-  puts("  rust rustc  Run packaged Rust compiler");
-  puts("  rust sccache  Run packaged native sccache wrapper");
-  puts("  rust build input.rs -o output.com  Build no_std Rust APE (rust_main entry)");
-  puts("  node [args]  Run packaged native Node.js for this host");
-  puts("  machin-compiler  Run linked self-hosted Machin compiler");
-  puts("  machin-demo  Run statically linked Machin sample (when available)");
-  puts("  lua           Run the embedded Cosmopolitan Lua interpreter");
-  puts("  version       Show bootstrap version");
-  puts("  selftest      Verify command dispatch");
-  puts("  machin build input.mfl -o output.com  Compile directly into an APE");
-  puts("  cache         Reserved for future cache policy integration");
-  puts("  shell         Reserved for xshell integration");
-  puts("  devices       Reserved for WebGPU/CPU discovery");
+  puts("Cosmo manifest toolchain APE");
+  printf("Usage: %s path/to/project/manifest.json\n", name);
 }
 
 static int dispatch(int argc, char **argv) {
@@ -69,7 +53,10 @@ static int dispatch(int argc, char **argv) {
     fprintf(stderr, "%s: integration not implemented yet\n", argv[1]);
     return 2;
   }
-  fprintf(stderr, "Unknown command: %s\n", argv[1]);
+  if (argc == 2) {
+    if (!project_manifest_main) { fputs("Project manifest driver not linked\n", stderr); return 2; }
+    return project_manifest_main(argc, argv);
+  }
   usage(argv[0]);
   return 2;
 }

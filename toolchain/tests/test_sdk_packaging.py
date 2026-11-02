@@ -52,6 +52,7 @@ class SdkPackagingTest(unittest.TestCase):
         self.source = self.workdir / "source"
         self.compiler = self.workdir / "compiler"
         self.nodejs = self.workdir / "nodejs"
+        self.webgpu = self.workdir / "webgpu"
         self.sdk = self.workdir / "sdk"
         self.archive = self.workdir / "o/toolchain/compiler-payload/cosmocc-sdk.zip"
         self.archive.parent.mkdir(parents=True)
@@ -80,6 +81,10 @@ class SdkPackagingTest(unittest.TestCase):
             "hosts": list(NODEJS_RELEASE_HOSTS),
             "version": "26.13.0",
         }))
+        for name in ("manifest.json", "link.args", "include/webgpu.h", "include/wgpu.h",
+                     "runtime/vulkan_loader.c", "runtime/win64_bridge.c",
+                     "lib/wgpu/libwgpu_native.a", "licenses/LICENSE"):
+            self.write(self.webgpu, name, "webgpu " + name)
         self.write(self.sdk, "generated/x86_64-unknown-linux-musl.json", "{}")
         for arch in ("x86_64", "aarch64"):
             name = f"{arch}-unknown-linux-musl.json"
@@ -109,11 +114,13 @@ class SdkPackagingTest(unittest.TestCase):
             path.chmod(0o755)
         return path
 
-    def run_packager(self, with_rust=True, machin=None, with_node=True):
+    def run_packager(self, with_rust=True, machin=None, with_node=True,
+                     with_webgpu=True):
         args = [str(self.cosmocc)]
         args += ([str(self.source), str(self.compiler), str(self.sdk)]
                  if with_rust else ["", "", ""])
         args.append(str(self.nodejs) if with_node else "")
+        args.append(str(self.webgpu) if with_webgpu else "")
         args.append(str(ROOT / "toolchain"))
         args.extend([str(machin) if machin else "", str(machin / "compiler") if machin else ""])
         return subprocess.run(
@@ -121,8 +128,9 @@ class SdkPackagingTest(unittest.TestCase):
             cwd=self.workdir, text=True, capture_output=True,
         )
 
-    def package(self, with_rust=True, with_node=True):
-        result = self.run_packager(with_rust, with_node=with_node)
+    def package(self, with_rust=True, with_node=True, with_webgpu=True):
+        result = self.run_packager(with_rust, with_node=with_node,
+                                   with_webgpu=with_webgpu)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("Duplicate name", result.stderr)
         return zipfile.ZipFile(self.archive)
@@ -149,6 +157,11 @@ class SdkPackagingTest(unittest.TestCase):
                           RUST_PREFIX + "/bin/sccache", RUST_PREFIX + "/share/doc/sccache/LICENSE",
                           "nodejs/hosts/" + HOST + "/bin/node",
                           "nodejs/hosts/" + HOST + "/share/doc/nodejs/LICENSE",
+                          "webgpu/manifest.json", "webgpu/link.args",
+                          "webgpu/include/webgpu.h", "webgpu/include/wgpu.h",
+                          "webgpu/runtime/vulkan_loader.c",
+                          "webgpu/lib/wgpu/libwgpu_native.a",
+                          "webgpu/licenses/LICENSE",
                          RUST_PREFIX + "/lib/librustc_driver.so", "rust-ape/run.sh",
                          "rust-ape/EMBEDDED.txt", "rust-ape-sdk/LICENSE",
                          "rust-ape-sdk/generated/x86_64-unknown-linux-musl.json",
@@ -238,7 +251,7 @@ class SdkPackagingTest(unittest.TestCase):
         self.assertTrue(os.access(link, os.X_OK))
 
     def test_c_only_payload_remains_supported(self):
-        with self.package(with_rust=False, with_node=False) as archive:
+        with self.package(with_rust=False, with_node=False, with_webgpu=False) as archive:
             self.assertEqual(set(archive.namelist()),
                              {"bin/cosmocc", "include/stdio.h", "lib/libc.a", "toolchain-metadata/BUILD.json"})
 
@@ -252,7 +265,9 @@ class SdkPackagingTest(unittest.TestCase):
             self.assertEqual(record["inputs"]["rust_compiler"]["verification"], "unverified-local-input")
             self.assertEqual(record["inputs"]["nodejs"]["verification"], "unverified-local-input")
             self.assertEqual(len(record["notices"]),
-                             (len(RUST_NOTICES) + 1) * len(RUST_HOSTS) + len(NODEJS_RELEASE_HOSTS))
+                             (len(RUST_NOTICES) + 1) * len(RUST_HOSTS) +
+                             len(NODEJS_RELEASE_HOSTS) + 1)
+            self.assertIn("webgpu", record["inputs"])
             self.assertNotIn(str(self.workdir), json.dumps(record))
 
     def test_missing_compiler_notice_fails_before_packaging(self):
@@ -285,7 +300,8 @@ class SdkPackagingTest(unittest.TestCase):
         machin = self.workdir / "machin"
         self.write(machin, "LICENSE", "Machin license fixture")
         self.write(machin, "compiler", "compiler fixture")
-        result = self.run_packager(with_rust=False, machin=machin, with_node=False)
+        result = self.run_packager(with_rust=False, machin=machin,
+                                   with_node=False, with_webgpu=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         with zipfile.ZipFile(self.archive) as archive:
             self.assertEqual(archive.read("toolchain-metadata/licenses/machin/LICENSE"), b"Machin license fixture")
@@ -301,7 +317,7 @@ class SdkPackagingTest(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((destination / "bin/cosmocc").read_text(), "compiler")
-        for name in ("rust-ape", "rust-toolchain", "rust-ape-sdk", "nodejs"):
+        for name in ("rust-ape", "rust-toolchain", "rust-ape-sdk", "nodejs", "webgpu"):
             self.assertFalse((destination / name).exists(), name)
 
     def test_rust_extraction_does_not_materialize_c_or_patched_sdk(self):
@@ -330,19 +346,34 @@ class SdkPackagingTest(unittest.TestCase):
         self.assertFalse((destination / "bin").exists())
         self.assertFalse((destination / "rust-toolchain").exists())
 
+    def test_webgpu_extraction_selects_only_builtin_library(self):
+        with self.package():
+            pass
+        destination = self.workdir / "webgpu-only"
+        destination.mkdir()
+        result = subprocess.run([str(self.extractor), str(self.archive),
+                                 str(destination), "webgpu"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((destination / "webgpu/manifest.json").read_text(),
+                         "webgpu manifest.json")
+        self.assertTrue((destination / "webgpu/lib/wgpu/libwgpu_native.a").is_file())
+        self.assertEqual({path.name for path in destination.iterdir()}, {"webgpu"})
+
     def test_components_can_be_materialized_once_into_same_directory(self):
         with self.package():
             pass
         destination = self.workdir / "combined"
         destination.mkdir()
-        for component in ("rust", "nodejs", "c"):
+        for component in ("rust", "nodejs", "webgpu", "c"):
             result = subprocess.run([str(self.extractor), str(self.archive), str(destination), component] +
-                                    ([HOST] if component in ("rust", "nodejs") else []),
+                                     ([HOST] if component in ("rust", "nodejs") else []),
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((destination / "bin/cosmocc").is_file())
         self.assertTrue((destination / RUST_PREFIX / "bin/rustc").is_file())
         self.assertTrue((destination / "nodejs/hosts" / HOST / "bin/node").is_file())
+        self.assertTrue((destination / "webgpu/manifest.json").is_file())
         self.assertFalse((destination / "rust-ape-sdk").exists())
 
     def test_rust_extraction_selects_one_host_and_keeps_shared_target_aliases(self):

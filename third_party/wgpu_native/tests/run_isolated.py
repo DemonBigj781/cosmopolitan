@@ -24,10 +24,11 @@ import tempfile
 import time
 
 
-ARTIFACTS = ("webgpu_compute.exe", "ape-x86_64.elf")
+ARTIFACTS = ("webgpu_compute", "ape-x86_64.elf")
 ROOT_CONTENTS = set(ARTIFACTS) | {"tmp"}
 LOG_LIMIT = 16 * 1024 * 1024
 COMPUTE_PASS = "headless Vulkan compute and readback: PASS"
+RASTER_PASS = "headless Vulkan triangle raster and readback: PASS"
 
 
 class IsolationFailure(Exception):
@@ -50,14 +51,14 @@ def isolated_environment():
         "TZ": "UTC",
         "TERM": "dumb",
         "COSMO_WGPU_TRACE": "1",
-        "LP_NUM_THREADS": "2",
         "MESA_SHADER_CACHE_DISABLE": "true",
     }
 
 
 def worker(arguments):
     """Enter the root in a child, then replace Python with the static loader."""
-    if len(arguments) < 2 or arguments[0] not in ("probe", "collatz", "matmul"):
+    if len(arguments) < 2 or arguments[0] not in (
+            "probe", "collatz", "matmul", "raster"):
         print("Invalid internal isolation worker invocation", file=sys.stderr)
         return 125
     mode, root = arguments[:2]
@@ -83,9 +84,11 @@ def worker(arguments):
         root_stat = os.stat("/")
         print(f"CHROOT_CONFIRMED {root_stat.st_dev}:{root_stat.st_ino}")
         return 0
-    command = ["/ape-x86_64.elf", "/webgpu_compute.exe", "--software"]
+    command = ["/ape-x86_64.elf", "/webgpu_compute", "--software"]
     if mode == "matmul":
         command.append("--matmul")
+    elif mode == "raster":
+        command.append("--raster")
     try:
         os.execve(command[0], command, isolated_environment())
     except OSError as error:
@@ -208,14 +211,15 @@ def validate_output(mode, text):
     if not any(line.startswith("adapter: ") and line.endswith("; type=CPU/software")
                for line in lines):
         errors.append("adapter is not identified as CPU/software")
-    for marker in ("C -> Rust version check: PASS", COMPUTE_PASS):
+    pass_marker = RASTER_PASS if mode == "raster" else COMPUTE_PASS
+    for marker in ("C -> Rust version check: PASS", pass_marker):
         if marker not in lines:
             errors.append(f"missing result marker: {marker}")
     if mode == "collatz":
         for marker in ("input: [1, 2, 3, 4]", "readback: [0, 1, 7, 2]"):
             if marker not in lines:
                 errors.append(f"missing numerical output: {marker}")
-    else:
+    elif mode == "matmul":
         matrix = [re.fullmatch(
             r"f32 matrix multiplication: 13x17 \* 17x11; "
             r"143 results verified; max error ([0-9.eE+\-]+); "
@@ -231,6 +235,22 @@ def validate_output(mode, text):
                     raise ValueError
             except ValueError:
                 errors.append("matrix reported an invalid maximum numerical error")
+    else:
+        raster = [re.fullmatch(
+            r"rasterized triangle: 64x64 RGBA8; ([0-9]+) covered pixels; "
+            r"center rgba=\[([0-9]+), ([0-9]+), ([0-9]+), ([0-9]+)\]; "
+            r"clear corners: PASS", line)
+            for line in lines]
+        raster = [match for match in raster if match]
+        if len(raster) != 1:
+            errors.append("missing triangle raster/readback verification")
+        else:
+            covered, red, green, blue, alpha = map(int, raster[0].groups())
+            if not 800 <= covered <= 1400:
+                errors.append("triangle reported implausible pixel coverage")
+            if not (228 <= red <= 232 and 49 <= green <= 53 and
+                    24 <= blue <= 28 and alpha == 255):
+                errors.append("triangle center pixel did not match the shader color")
     return errors
 
 
@@ -257,7 +277,7 @@ def verify(directory, timeout):
         baseline = hashes(directory)
         report["sha256_before"] = baseline
         report["sha256_manifest_verified"] = verify_manifest(directory, baseline)
-        for mode in ("collatz", "matmul"):
+        for mode in ("collatz", "matmul", "raster"):
             with tempfile.TemporaryDirectory(prefix=f"root-{mode}-", dir=log_directory) as temp:
                 root = Path(temp)
                 for name in ARTIFACTS:
@@ -279,7 +299,12 @@ def verify(directory, timeout):
                         )
                 run = capture(mode, root, log_directory / f"{mode}.log", timeout)
                 run["name"] = mode
-                run["arguments"] = ["--software"] + (["--matmul"] if mode == "matmul" else [])
+                workload_argument = {
+                    "collatz": [],
+                    "matmul": ["--matmul"],
+                    "raster": ["--raster"],
+                }[mode]
+                run["arguments"] = ["--software", *workload_argument]
                 run["root_initial_contents"] = sorted(ROOT_CONTENTS)
                 run["sha256_before"] = copied_before
                 run["errors"] = []
@@ -298,7 +323,7 @@ def verify(directory, timeout):
                 run["status"] = "failed" if run["errors"] else "passed"
                 print(f"{mode}: exit={run['exit_code']}; log={run['log']}", flush=True)
         if any(run["errors"] for run in report["runs"]):
-            raise IsolationFailure("One or more isolated software compute checks failed")
+            raise IsolationFailure("One or more isolated software WebGPU checks failed")
         report["status"] = "passed"
         exit_code = 0
     except (IsolationFailure, OSError, ValueError) as error:
@@ -322,10 +347,11 @@ def verify(directory, timeout):
         print(f"Isolated Linux software verification: FAILED: {report.get('error', 'unknown error')}",
               file=sys.stderr)
         for run in report["runs"]:
-            for error in run["errors"]:
-                print(f"  {run['name']}: {error}", file=sys.stderr)
+            for run_error in run["errors"]:
+                print(f"  {run['name']}: {run_error}", file=sys.stderr)
     else:
-        print("Isolated Linux software verification: PASS (actual chroot, both numerical tests, unchanged hashes)")
+        print("Isolated Linux software verification: PASS "
+              "(actual chroot, compute and raster checks, unchanged hashes)")
     print(f"Isolation report: {report_path}", flush=True)
     return exit_code
 
@@ -333,9 +359,9 @@ def verify(directory, timeout):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-dir", type=Path, required=True,
-                        help="directory containing webgpu_compute.exe and ape-x86_64.elf")
+                        help="directory containing webgpu_compute and ape-x86_64.elf")
     parser.add_argument("--timeout", type=int, default=180,
-                        help="per-compute timeout in seconds, between 1 and 600 (default: 180)")
+                        help="per-workload timeout in seconds, between 1 and 600 (default: 180)")
     args = parser.parse_args()
     if not 1 <= args.timeout <= 600:
         parser.error("--timeout must be between 1 and 600 seconds")

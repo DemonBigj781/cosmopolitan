@@ -23,8 +23,9 @@ Build
 From the repository root on Linux x86-64:
 
     bash third_party/wgpu_native/build.sh --software
-    o/webgpu/ape-x86_64.elf o/webgpu/webgpu_compute.exe --software
-    o/webgpu/ape-x86_64.elf o/webgpu/webgpu_compute.exe --software --matmul
+    o/webgpu/ape-x86_64.elf o/webgpu/webgpu_compute --software
+    o/webgpu/ape-x86_64.elf o/webgpu/webgpu_compute --software --matmul
+    o/webgpu/ape-x86_64.elf o/webgpu/webgpu_compute --software --raster
 
 For the Mesa/LLVM libraries and direct-driver diagnostic alone:
 
@@ -56,6 +57,9 @@ Call this before selecting the embedded provider and creating a WebGPU instance.
 The strong reference in register.c pulls lvp_GetInstanceProcAddr out of the
 driver archive. The surrounding loader's embedded-provider dispatch supplies
 the Vulkan loader-level compatibility behavior; no ICD JSON file is required.
+Registration also defaults `LP_NUM_THREADS` to 2 when the application has not
+set it. The current Cosmopolitan llvmpipe port stalls during raster work with
+three or more workers; callers can still explicitly choose another value.
 
 Sources and local changes
 ------------------------

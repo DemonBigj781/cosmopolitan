@@ -20,7 +20,7 @@ Build on Linux x86-64. Required host tools: a C compiler, libclang (for
 bindgen), Python 3.12+, curl, git, patch, tar, unzip, sha256sum.
 The pinned Rust/Cosmocc SDK and build outputs live under o/.
 
-Output: o/webgpu/webgpu_compute.exe (one Windows/Linux x86-64 APE)
+Output: o/webgpu/webgpu_compute (one Windows/Linux x86-64 APE)
         o/webgpu/ape-x86_64.elf (optional explicit Linux APE loader)
 
 --software also builds Mesa lavapipe and LLVM as Cosmopolitan static libraries.
@@ -31,7 +31,8 @@ Vulkan loader or driver. Its Mesa outputs use the default o/lavapipe directory.
 Run --version to check C/Rust linkage without Vulkan. Run without arguments
 for shader dispatch/readback using a host Vulkan loader and driver. Use
 --software --matmul to test the embedded CPU driver with f32 matrix operations.
-This is an experimental headless compute port, not a model inference engine.
+Use --software --raster to draw and read back an offscreen RGBA8 triangle.
+This is an experimental headless compute/raster port, not a window system.
 EOF
       exit 0 ;;
     --software) webgpu_software=1 ;;
@@ -102,15 +103,15 @@ test -s "$webgpu_archive"
   "$webgpu_dir/runtime/win64_bridge.c" \
   "$webgpu_archive" "${webgpu_software_args[@]}" \
   -Wl,--gc-sections -pthread -lm -ldl \
-  -o "$webgpu_out/webgpu_compute.com.dbg"
+  -o "$webgpu_out/webgpu_compute.dbg"
 
 # Keep APE/PE support. The Linux-only apelink -V1 option is not used.
 sh "$webgpu_sdk/vendor/cosmocc/bin/apelink" \
   -l "$webgpu_sdk/vendor/cosmocc/bin/ape-x86_64.elf" \
-  -o "$webgpu_out/webgpu_compute.exe" "$webgpu_out/webgpu_compute.com.dbg"
-python3 "$webgpu_dir/configure_pe.py" "$webgpu_out/webgpu_compute.exe"
+  -o "$webgpu_out/webgpu_compute" "$webgpu_out/webgpu_compute.dbg"
+python3 "$webgpu_dir/configure_pe.py" "$webgpu_out/webgpu_compute"
 cp -- "$webgpu_sdk/vendor/cosmocc/bin/ape-x86_64.elf" "$webgpu_out/ape-x86_64.elf"
-chmod +x -- "$webgpu_out/webgpu_compute.exe" "$webgpu_out/ape-x86_64.elf"
+chmod +x -- "$webgpu_out/webgpu_compute" "$webgpu_out/ape-x86_64.elf"
 
 python3 "$webgpu_dir/package_notices.py"
 python3 - "$webgpu_out" "$webgpu_dir/Cargo.cosmo.lock" "$webgpu_software" <<'PY'
@@ -131,11 +132,12 @@ manifest = {
     "cosmocc": "4.0.2",
     "rust": "nightly-2026-07-28",
     "features": ["wgsl", "vulkan"],
+    "verified_workloads": ["collatz", "f32-matmul", "rgba8-triangle-raster"],
     "embedded_software_vulkan": software,
     "windows_native_stack_reserve": 8 * 1024 * 1024,
     "windows_native_stack_commit": 4096,
     "lock_sha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
-    "application_sha256": hashlib.sha256((out / "webgpu_compute.exe").read_bytes()).hexdigest(),
+    "application_sha256": hashlib.sha256((out / "webgpu_compute").read_bytes()).hexdigest(),
     "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
     "source_dirty": bool(subprocess.check_output(
         ["git", "status", "--porcelain", "--untracked-files=normal"], text=True)),
@@ -149,6 +151,6 @@ if software:
     shutil.copytree(notices, out / "licenses/software-vulkan", dirs_exist_ok=True)
 (out / "BUILD.json").write_text(json.dumps(manifest, indent=2) + "\n")
 PY
-(cd -- "$webgpu_out" && sha256sum webgpu_compute.exe ape-x86_64.elf BUILD.json > SHA256SUMS)
-printf '\nBuilt %s\n' "$webgpu_out/webgpu_compute.exe"
+(cd -- "$webgpu_out" && sha256sum webgpu_compute ape-x86_64.elf BUILD.json > SHA256SUMS)
+printf '\nBuilt %s\n' "$webgpu_out/webgpu_compute"
 printf 'Run bash third_party/wgpu_native/test.sh for startup and compute checks.\n'

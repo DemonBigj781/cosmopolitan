@@ -32,8 +32,10 @@ static int selected(const char *name,enum SdkComponent component,const char *rus
     return under(name,prefix) || !strcmp(name,"nodejs/hosts.json") ||
            !strcmp(name,"nodejs/.toolchain-bootstrap.json");
   }
+  if(component==SDK_WEBGPU)return under(name,"webgpu");
   return !under(name,"rust-toolchain") && !under(name,"rust-ape-sdk") &&
          !under(name,"rust-ape") && !under(name,"nodejs") &&
+         !under(name,"webgpu") &&
          strcmp(name,".cosmo") && strncmp(name,".symtab.",8);
 }
 

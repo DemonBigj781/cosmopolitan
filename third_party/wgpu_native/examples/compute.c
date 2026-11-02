@@ -62,6 +62,43 @@ static const char shader[] =
     "  }\n"
     "}\n";
 
+static const char raster_shader[] =
+    "struct VertexOutput {\n"
+    "  @builtin(position) position: vec4<f32>,\n"
+    "};\n"
+    "@vertex\n"
+    "fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {\n"
+    "  var positions = array<vec2<f32>, 3>(\n"
+    "    vec2<f32>(-0.75, -0.75),\n"
+    "    vec2<f32>( 0.75, -0.75),\n"
+    "    vec2<f32>( 0.00,  0.75),\n"
+    "  );\n"
+    "  var output: VertexOutput;\n"
+    "  output.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);\n"
+    "  return output;\n"
+    "}\n"
+    "@fragment\n"
+    "fn fs_main() -> @location(0) vec4<f32> {\n"
+    "  return vec4<f32>(0.9, 0.2, 0.1, 1.0);\n"
+    "}\n";
+
+enum Workload {
+  WORKLOAD_COLLATZ,
+  WORKLOAD_MATRIX,
+  WORKLOAD_RASTER,
+};
+
+enum {
+  RASTER_WIDTH = 64,
+  RASTER_HEIGHT = 64,
+  RASTER_BYTES_PER_PIXEL = 4,
+  RASTER_BYTES_PER_ROW = 256,
+  RASTER_BYTES = RASTER_BYTES_PER_ROW * RASTER_HEIGHT,
+};
+
+_Static_assert(RASTER_WIDTH * RASTER_BYTES_PER_PIXEL <= RASTER_BYTES_PER_ROW,
+               "Raster readback rows must fit their aligned stride");
+
 /* Odd dimensions exercise partial workgroups and the last shared-memory tile. */
 enum {
   MATRIX_ROWS = 13,
@@ -332,12 +369,15 @@ static int check_version(void) {
               !atomic_load_explicit(&execution_error, memory_order_acquire),   \
           CHECK_EXECUTION, message)
 
-static int check_compute(bool matrix, bool software) {
+static int check_workload(enum Workload workload, bool software) {
+  const bool matrix = workload == WORKLOAD_MATRIX;
+  const bool raster = workload == WORKLOAD_RASTER;
   uint32_t input[MATRIX_WORDS] = {1, 2, 3, 4};
   uint32_t expected[MATRIX_WORDS] = {0, 1, 7, 2};
   uint32_t output[MATRIX_WORDS] = {0};
   const size_t words = matrix ? MATRIX_WORDS : 4;
-  const size_t bytes = words * sizeof(uint32_t);
+  const size_t data_bytes = words * sizeof(uint32_t);
+  const size_t readback_bytes = raster ? RASTER_BYTES : data_bytes;
   if (matrix)
     prepare_matrix(input, expected);
   struct AdapterRequest adapter_request = {0};
@@ -350,10 +390,14 @@ static int check_compute(bool matrix, bool software) {
   WGPUShaderModule module = NULL;
   WGPUBuffer storage = NULL, staging = NULL;
   WGPUComputePipeline pipeline = NULL;
+  WGPURenderPipeline render_pipeline = NULL;
   WGPUBindGroupLayout layout = NULL;
   WGPUBindGroup group = NULL;
+  WGPUTexture target = NULL;
+  WGPUTextureView target_view = NULL;
   WGPUCommandEncoder encoder = NULL;
   WGPUComputePassEncoder pass = NULL;
+  WGPURenderPassEncoder render_pass = NULL;
   WGPUCommandBuffer commands = NULL;
   bool mapped = false;
   int result = CHECK_OK;
@@ -435,7 +479,9 @@ static int check_compute(bool matrix, bool software) {
   REQUIRE_OBJECT(queue, "could not obtain queue");
 
   WGPUShaderSourceWGSL source = WGPU_SHADER_SOURCE_WGSL_INIT;
-  source.code = (WGPUStringView){matrix ? matrix_shader : shader, WGPU_STRLEN};
+  source.code = (WGPUStringView){raster ? raster_shader
+                                        : matrix ? matrix_shader : shader,
+                                 WGPU_STRLEN};
   WGPUShaderModuleDescriptor shader_desc = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
   shader_desc.nextInChain = &source.chain;
   trace_stage("create WGSL shader module");
@@ -443,64 +489,129 @@ static int check_compute(bool matrix, bool software) {
   REQUIRE_OBJECT(module, "embedded WGSL compilation failed");
 
   WGPUBufferDescriptor buffer_desc = WGPU_BUFFER_DESCRIPTOR_INIT;
-  buffer_desc.size = bytes;
-  buffer_desc.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst |
-                      WGPUBufferUsage_CopySrc;
-  trace_stage("create storage buffer");
-  storage = wgpuDeviceCreateBuffer(device, &buffer_desc);
-  REQUIRE_OBJECT(storage, "could not create storage buffer");
+  buffer_desc.size = readback_bytes;
   buffer_desc.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst;
   trace_stage("create readback buffer");
   staging = wgpuDeviceCreateBuffer(device, &buffer_desc);
   REQUIRE_OBJECT(staging, "could not create readback buffer");
 
-  WGPUComputePipelineDescriptor pipeline_desc =
-      WGPU_COMPUTE_PIPELINE_DESCRIPTOR_INIT;
-  pipeline_desc.compute.module = module;
-  pipeline_desc.compute.entryPoint = (WGPUStringView){"main", WGPU_STRLEN};
-  trace_stage("create compute pipeline");
-  pipeline = wgpuDeviceCreateComputePipeline(device, &pipeline_desc);
-  REQUIRE_OBJECT(pipeline, "could not create compute pipeline");
-  trace_stage("create resource bindings");
-  layout = wgpuComputePipelineGetBindGroupLayout(pipeline, 0);
-  REQUIRE_OBJECT(layout, "could not obtain bind group layout");
-  WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
-  entry.binding = 0;
-  entry.buffer = storage;
-  entry.size = bytes;
-  WGPUBindGroupDescriptor group_desc = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-  group_desc.layout = layout;
-  group_desc.entryCount = 1;
-  group_desc.entries = &entry;
-  group = wgpuDeviceCreateBindGroup(device, &group_desc);
-  REQUIRE_OBJECT(group, "could not create bind group");
-
-  trace_stage("encode compute and readback commands");
   encoder = wgpuDeviceCreateCommandEncoder(device, NULL);
   REQUIRE_OBJECT(encoder, "could not create command encoder");
-  pass = wgpuCommandEncoderBeginComputePass(encoder, NULL);
-  REQUIRE_OBJECT(pass, "could not begin compute pass");
-  wgpuComputePassEncoderSetPipeline(pass, pipeline);
-  wgpuComputePassEncoderSetBindGroup(pass, 0, group, 0, NULL);
-  wgpuComputePassEncoderDispatchWorkgroups(pass, matrix ? 2 : 4,
-                                          matrix ? 2 : 1, 1);
-  wgpuComputePassEncoderEnd(pass);
-  wgpuComputePassEncoderRelease(pass);
-  pass = NULL;
-  wgpuCommandEncoderCopyBufferToBuffer(encoder, storage, 0, staging, 0,
-                                       bytes);
+  if (raster) {
+    WGPUTextureDescriptor texture_desc = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    texture_desc.usage =
+        WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
+    texture_desc.size = (WGPUExtent3D){RASTER_WIDTH, RASTER_HEIGHT, 1};
+    texture_desc.format = WGPUTextureFormat_RGBA8Unorm;
+    trace_stage("create raster target");
+    target = wgpuDeviceCreateTexture(device, &texture_desc);
+    REQUIRE_OBJECT(target, "could not create raster target texture");
+    target_view = wgpuTextureCreateView(target, NULL);
+    REQUIRE_OBJECT(target_view, "could not create raster target view");
+
+    WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
+    color_target.format = WGPUTextureFormat_RGBA8Unorm;
+    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+    fragment.module = module;
+    fragment.entryPoint = (WGPUStringView){"fs_main", WGPU_STRLEN};
+    fragment.targetCount = 1;
+    fragment.targets = &color_target;
+    WGPURenderPipelineDescriptor render_desc =
+        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    render_desc.vertex.module = module;
+    render_desc.vertex.entryPoint =
+        (WGPUStringView){"vs_main", WGPU_STRLEN};
+    render_desc.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    render_desc.fragment = &fragment;
+    trace_stage("create raster pipeline");
+    render_pipeline = wgpuDeviceCreateRenderPipeline(device, &render_desc);
+    REQUIRE_OBJECT(render_pipeline, "could not create raster pipeline");
+
+    WGPURenderPassColorAttachment attachment =
+        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+    attachment.view = target_view;
+    attachment.loadOp = WGPULoadOp_Clear;
+    attachment.storeOp = WGPUStoreOp_Store;
+    attachment.clearValue = (WGPUColor){0.0, 0.0, 0.0, 1.0};
+    WGPURenderPassDescriptor pass_desc = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+    pass_desc.colorAttachmentCount = 1;
+    pass_desc.colorAttachments = &attachment;
+    trace_stage("encode triangle raster pass");
+    render_pass = wgpuCommandEncoderBeginRenderPass(encoder, &pass_desc);
+    REQUIRE_OBJECT(render_pass, "could not begin raster pass");
+    wgpuRenderPassEncoderSetPipeline(render_pass, render_pipeline);
+    wgpuRenderPassEncoderDraw(render_pass, 3, 1, 0, 0);
+    wgpuRenderPassEncoderEnd(render_pass);
+    wgpuRenderPassEncoderRelease(render_pass);
+    render_pass = NULL;
+
+    WGPUTexelCopyTextureInfo copy_source =
+        WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    copy_source.texture = target;
+    WGPUTexelCopyBufferInfo copy_destination =
+        WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
+    copy_destination.buffer = staging;
+    copy_destination.layout.bytesPerRow = RASTER_BYTES_PER_ROW;
+    copy_destination.layout.rowsPerImage = RASTER_HEIGHT;
+    WGPUExtent3D copy_size = {RASTER_WIDTH, RASTER_HEIGHT, 1};
+    wgpuCommandEncoderCopyTextureToBuffer(
+        encoder, &copy_source, &copy_destination, &copy_size);
+  } else {
+    buffer_desc.size = data_bytes;
+    buffer_desc.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst |
+                        WGPUBufferUsage_CopySrc;
+    trace_stage("create storage buffer");
+    storage = wgpuDeviceCreateBuffer(device, &buffer_desc);
+    REQUIRE_OBJECT(storage, "could not create storage buffer");
+
+    WGPUComputePipelineDescriptor pipeline_desc =
+        WGPU_COMPUTE_PIPELINE_DESCRIPTOR_INIT;
+    pipeline_desc.compute.module = module;
+    pipeline_desc.compute.entryPoint = (WGPUStringView){"main", WGPU_STRLEN};
+    trace_stage("create compute pipeline");
+    pipeline = wgpuDeviceCreateComputePipeline(device, &pipeline_desc);
+    REQUIRE_OBJECT(pipeline, "could not create compute pipeline");
+    trace_stage("create resource bindings");
+    layout = wgpuComputePipelineGetBindGroupLayout(pipeline, 0);
+    REQUIRE_OBJECT(layout, "could not obtain bind group layout");
+    WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+    entry.binding = 0;
+    entry.buffer = storage;
+    entry.size = data_bytes;
+    WGPUBindGroupDescriptor group_desc = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    group_desc.layout = layout;
+    group_desc.entryCount = 1;
+    group_desc.entries = &entry;
+    group = wgpuDeviceCreateBindGroup(device, &group_desc);
+    REQUIRE_OBJECT(group, "could not create bind group");
+
+    trace_stage("encode compute and readback commands");
+    pass = wgpuCommandEncoderBeginComputePass(encoder, NULL);
+    REQUIRE_OBJECT(pass, "could not begin compute pass");
+    wgpuComputePassEncoderSetPipeline(pass, pipeline);
+    wgpuComputePassEncoderSetBindGroup(pass, 0, group, 0, NULL);
+    wgpuComputePassEncoderDispatchWorkgroups(pass, matrix ? 2 : 4,
+                                             matrix ? 2 : 1, 1);
+    wgpuComputePassEncoderEnd(pass);
+    wgpuComputePassEncoderRelease(pass);
+    pass = NULL;
+    wgpuCommandEncoderCopyBufferToBuffer(encoder, storage, 0, staging, 0,
+                                         data_bytes);
+  }
   commands = wgpuCommandEncoderFinish(encoder, NULL);
   REQUIRE_OBJECT(commands, "could not finish command buffer");
-  trace_stage("upload input");
-  wgpuQueueWriteBuffer(queue, storage, 0, input, bytes);
-  trace_stage("submit compute commands");
+  if (!raster) {
+    trace_stage("upload input");
+    wgpuQueueWriteBuffer(queue, storage, 0, input, data_bytes);
+  }
+  trace_stage(raster ? "submit raster commands" : "submit compute commands");
   wgpuQueueSubmit(queue, 1, &commands);
   REQUIRE(!atomic_load_explicit(&execution_error, memory_order_acquire),
           CHECK_EXECUTION, "command submission failed");
 
   trace_stage("request readback mapping");
   wgpuBufferMapAsync(
-      staging, WGPUMapMode_Read, 0, bytes,
+      staging, WGPUMapMode_Read, 0, readback_bytes,
       (WGPUBufferMapCallbackInfo){
           .mode = WGPUCallbackMode_AllowProcessEvents,
           .callback = buffer_mapped,
@@ -514,15 +625,59 @@ static int check_compute(bool matrix, bool software) {
           "mapping the readback buffer failed");
   mapped = true;
   trace_stage("verify mapped output");
-  const void *data = wgpuBufferGetConstMappedRange(staging, 0, bytes);
+  const void *data =
+      wgpuBufferGetConstMappedRange(staging, 0, readback_bytes);
   REQUIRE_OBJECT(data, "mapped range was unavailable");
-  memcpy(output, data, bytes);
-  if (!matrix)
+  if (raster) {
+    const uint8_t *pixels = data;
+    const uint8_t *center =
+        pixels + (RASTER_HEIGHT / 2) * RASTER_BYTES_PER_ROW +
+        (RASTER_WIDTH / 2) * RASTER_BYTES_PER_PIXEL;
+    const unsigned expected_red = 230;
+    const unsigned expected_green = 51;
+    const unsigned expected_blue = 26;
+    size_t covered = 0;
+    for (unsigned y = 0; y < RASTER_HEIGHT; ++y) {
+      for (unsigned x = 0; x < RASTER_WIDTH; ++x) {
+        const uint8_t *pixel = pixels + y * RASTER_BYTES_PER_ROW +
+                               x * RASTER_BYTES_PER_PIXEL;
+        if (pixel[0] >= 220 && pixel[1] >= 45 && pixel[1] <= 60 &&
+            pixel[2] >= 20 && pixel[2] <= 35 && pixel[3] == 255)
+          ++covered;
+      }
+    }
+    REQUIRE(center[0] >= expected_red - 2 && center[0] <= expected_red + 2 &&
+                center[1] >= expected_green - 2 &&
+                center[1] <= expected_green + 2 &&
+                center[2] >= expected_blue - 2 &&
+                center[2] <= expected_blue + 2 && center[3] == 255,
+            CHECK_READBACK, "triangle center pixel has the wrong color");
+    const unsigned corners[][2] = {
+        {0, 0}, {RASTER_WIDTH - 1, 0},
+        {0, RASTER_HEIGHT - 1}, {RASTER_WIDTH - 1, RASTER_HEIGHT - 1},
+    };
+    for (size_t i = 0; i < sizeof(corners) / sizeof(corners[0]); ++i) {
+      const uint8_t *pixel =
+          pixels + corners[i][1] * RASTER_BYTES_PER_ROW +
+          corners[i][0] * RASTER_BYTES_PER_PIXEL;
+      REQUIRE(pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0 &&
+                  pixel[3] == 255,
+              CHECK_READBACK, "raster target corner was not clear black");
+    }
+    REQUIRE(covered >= 800 && covered <= 1400, CHECK_READBACK,
+            "triangle coverage was outside the expected range");
+    printf("rasterized triangle: 64x64 RGBA8; %zu covered pixels; "
+           "center rgba=[%u, %u, %u, %u]; clear corners: PASS\n",
+           covered, center[0], center[1], center[2], center[3]);
+  } else {
+    memcpy(output, data, data_bytes);
+  }
+  if (!raster && !matrix)
     printf("input: [1, 2, 3, 4]\nreadback: [%" PRIu32 ", %" PRIu32 ", %" PRIu32
            ", %" PRIu32 "]\n",
            output[0], output[1], output[2], output[3]);
   float max_error = 0;
-  for (size_t i = 0; i < words; ++i) {
+  for (size_t i = 0; !raster && i < words; ++i) {
     if (matrix && i >= MATRIX_RESULT_OFFSET) {
       float want = load_float(&expected[i]);
       float got = load_float(&output[i]);
@@ -555,6 +710,8 @@ cleanup:
     wgpuBufferUnmap(staging);
   if (commands)
     wgpuCommandBufferRelease(commands);
+  if (render_pass)
+    wgpuRenderPassEncoderRelease(render_pass);
   if (pass)
     wgpuComputePassEncoderRelease(pass);
   if (encoder)
@@ -565,10 +722,16 @@ cleanup:
     wgpuBindGroupLayoutRelease(layout);
   if (pipeline)
     wgpuComputePipelineRelease(pipeline);
+  if (render_pipeline)
+    wgpuRenderPipelineRelease(render_pipeline);
   if (staging)
     wgpuBufferRelease(staging);
   if (storage)
     wgpuBufferRelease(storage);
+  if (target_view)
+    wgpuTextureViewRelease(target_view);
+  if (target)
+    wgpuTextureRelease(target);
   if (module)
     wgpuShaderModuleRelease(module);
   if (queue)
@@ -586,12 +749,13 @@ cleanup:
     result = CHECK_EXECUTION;
   wgpuSetLogCallback(NULL, NULL);
   if (result == CHECK_OK)
-    puts("headless Vulkan compute and readback: PASS");
+    puts(raster ? "headless Vulkan triangle raster and readback: PASS"
+                : "headless Vulkan compute and readback: PASS");
   return result;
 }
 
 static void usage(FILE *stream, const char *program) {
-  fprintf(stream, "Usage: %s [--software] [--matmul]\n"
+  fprintf(stream, "Usage: %s [--software] [--matmul | --raster]\n"
                   "       %s --version | --help\n", program, program);
 }
 
@@ -611,13 +775,18 @@ int main(int argc, char **argv) {
     puts("Default: check embedded WGSL using the host Vulkan loader and driver.\n"
          "--version: check the linked Rust API without loading a GPU backend.\n"
          "--software: require a linked CPU Vulkan implementation; never load a host driver.\n"
-         "--matmul: verify f32 tiled matrix multiplication and workgroup barriers.");
+         "--matmul: verify f32 tiled matrix multiplication and workgroup barriers.\n"
+         "--raster: draw a headless triangle and verify RGBA8 texture readback.");
     return CHECK_OK;
   }
-  bool matrix = false, software = false;
+  enum Workload workload = WORKLOAD_COLLATZ;
+  bool software = false;
   for (int i = 1; i < argc; ++i) {
-    if (!strcmp(argv[i], "--matmul") && !matrix)
-      matrix = true;
+    if (!strcmp(argv[i], "--matmul") && workload == WORKLOAD_COLLATZ)
+      workload = WORKLOAD_MATRIX;
+    else if (!strcmp(argv[i], "--raster") &&
+             workload == WORKLOAD_COLLATZ)
+      workload = WORKLOAD_RASTER;
     else if (!strcmp(argv[i], "--software") && !software)
       software = true;
     else {
@@ -644,7 +813,7 @@ int main(int argc, char **argv) {
   putchar('\n');
   int result = check_version();
   if (!result)
-    result = check_compute(matrix, software);
+    result = check_workload(workload, software);
   unsigned long native_opens = cosmo_wgpu_vulkan_native_open_count();
   printf("native Vulkan loader opens: %lu\n", native_opens);
   if (software && native_opens) {

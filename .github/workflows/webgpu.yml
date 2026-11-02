@@ -70,17 +70,17 @@ jobs:
         id: package
         run: |
           set -euo pipefail
-          test -s o/webgpu/webgpu_compute.exe
+          test -s o/webgpu/webgpu_compute
           test -s o/webgpu/ape-x86_64.elf
           test -s o/webgpu/BUILD.json
           test -d o/webgpu/licenses
-          file o/webgpu/webgpu_compute.exe o/webgpu/ape-x86_64.elf
+          file o/webgpu/webgpu_compute o/webgpu/ape-x86_64.elf
           # Catch accidental Linux-only .dbg/ELF packaging before runtime jobs.
           python3 - <<'PY'
           from pathlib import Path
           import struct
 
-          data = Path("o/webgpu/webgpu_compute.exe").read_bytes()
+          data = Path("o/webgpu/webgpu_compute").read_bytes()
           assert data[:2] == b"MZ", "Expected a portable executable with a PE header"
           pe_offset, = struct.unpack_from("<I", data, 0x3c)
           assert data[pe_offset:pe_offset + 4] == b"PE\0\0", "Missing PE signature"
@@ -91,10 +91,10 @@ jobs:
           PY
           cp LICENSE o/webgpu/LICENSE.cosmopolitan
           # Preserve build.sh's source/toolchain manifest and license provenance.
-          printf '\nCI repository: %s\nCI commit: %s\nTarget: x86-64 APE\nApplication/backend: compiled once on Linux\nStartup tests: Linux and Windows\nCompute tests: Linux and Windows software Vulkan\n' \
+          printf '\nCI repository: %s\nCI commit: %s\nTarget: x86-64 APE\nApplication/backend: compiled once on Linux\nStartup tests: Linux and Windows\nCompute/raster tests: Linux and Windows software Vulkan\n' \
             "$GITHUB_REPOSITORY" "$GITHUB_SHA" >> o/webgpu/BUILD-INFO.txt
           cd o/webgpu
-          sha256sum webgpu_compute.exe ape-x86_64.elf \
+          sha256sum webgpu_compute ape-x86_64.elf \
             BUILD.json BUILD-INFO.txt LICENSE.cosmopolitan > SHA256SUMS
           read -r executable_sha256 _ < SHA256SUMS
           printf 'executable_sha256=%s\n' "$executable_sha256" >> "$GITHUB_OUTPUT"
@@ -113,7 +113,7 @@ jobs:
         with:
           name: webgpu-ape-x86_64
           path: |
-            o/webgpu/webgpu_compute.exe
+            o/webgpu/webgpu_compute
             o/webgpu/ape-x86_64.elf
             o/webgpu/SHA256SUMS
             o/webgpu/BUILD.json
@@ -131,7 +131,7 @@ jobs:
           name: webgpu-build-log
           path: |
             o/webgpu/build.log
-            o/webgpu/webgpu_compute.com.dbg
+            o/webgpu/webgpu_compute.dbg
           if-no-files-found: ignore
           retention-days: 14
 
@@ -157,10 +157,10 @@ jobs:
         run: |
           set -euo pipefail
           sha256sum --check --strict SHA256SUMS
-          printf '%s  webgpu_compute.exe\n' "$EXPECTED_SHA256" | sha256sum --check --strict -
-          chmod +x ape-x86_64.elf webgpu_compute.exe
+          printf '%s  webgpu_compute\n' "$EXPECTED_SHA256" | sha256sum --check --strict -
+          chmod +x ape-x86_64.elf webgpu_compute
           # An explicit loader avoids binfmt_misc setup and APE self-modification.
-          timeout 60s ./ape-x86_64.elf ./webgpu_compute.exe --version 2>&1 | tee startup.log
+          timeout 60s ./ape-x86_64.elf ./webgpu_compute --version 2>&1 | tee startup.log
           sha256sum --check --strict SHA256SUMS
           {
             echo '### Linux x86-64 startup passed'
@@ -200,11 +200,11 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $expected = $env:EXPECTED_SHA256.ToLowerInvariant()
-          $before = (Get-FileHash -Algorithm SHA256 .\webgpu_compute.exe).Hash.ToLowerInvariant()
+          $before = (Get-FileHash -Algorithm SHA256 .\webgpu_compute).Hash.ToLowerInvariant()
           if ($before -ne $expected) { throw 'Executable differs from the Linux build artifact' }
-          & .\webgpu_compute.exe --version 2>&1 | Tee-Object -FilePath startup.log
+          & .\webgpu_compute --version 2>&1 | Tee-Object -FilePath startup.log
           if ($LASTEXITCODE -ne 0) { throw "WebGPU startup failed with exit code $LASTEXITCODE" }
-          $after = (Get-FileHash -Algorithm SHA256 .\webgpu_compute.exe).Hash.ToLowerInvariant()
+          $after = (Get-FileHash -Algorithm SHA256 .\webgpu_compute).Hash.ToLowerInvariant()
           if ($after -ne $expected) { throw 'Executable changed during execution' }
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value @(
             '### Windows x86-64 startup passed',
@@ -223,7 +223,7 @@ jobs:
           retention-days: 14
 
   compute-linux:
-    name: Linux WebGPU compute through software Vulkan
+    name: Linux WebGPU compute and raster through software Vulkan
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -249,13 +249,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential libvulkan1 mesa-vulkan-drivers
 
-      - name: Execute compute and verify numerical readback
+      - name: Execute compute and raster with verified readback
         working-directory: artifact
         run: |
           set -euo pipefail
           sha256sum --check --strict SHA256SUMS
-          printf '%s  webgpu_compute.exe\n' "$EXPECTED_SHA256" | sha256sum --check --strict -
-          chmod +x ape-x86_64.elf webgpu_compute.exe
+          printf '%s  webgpu_compute\n' "$EXPECTED_SHA256" | sha256sum --check --strict -
+          chmod +x ape-x86_64.elf webgpu_compute
           shopt -s nullglob
           icds=(/usr/share/vulkan/icd.d/lvp_icd*.json)
           if (( ${#icds[@]} != 1 )); then
@@ -270,12 +270,14 @@ jobs:
           printf 'Software Vulkan ICD: %s\n' "$VK_DRIVER_FILES"
           # Default execution must dispatch a shader, read back, and compare results.
           # Missing adapters, validation errors, and mismatches must fail the job.
-          timeout 180s ./ape-x86_64.elf ./webgpu_compute.exe 2>&1 | tee compute.log
+          timeout 180s ./ape-x86_64.elf ./webgpu_compute 2>&1 | tee compute.log
+          timeout 180s ./ape-x86_64.elf ./webgpu_compute --raster 2>&1 | tee raster.log
           sha256sum --check --strict SHA256SUMS
           {
-            echo '### Linux WebGPU compute passed'
+            echo '### Linux WebGPU compute and raster passed'
             echo
             echo 'The same APE dispatched WebGPU compute through Mesa lavapipe and verified its result.'
+            echo 'It also rasterized a triangle into an offscreen RGBA8 texture and verified pixel readback.'
             echo 'Lavapipe executes Vulkan on the CPU; this establishes compute correctness, not hardware GPU performance.'
             echo 'Cosmopolitan currently compiles a small Linux dlopen helper with cc on first use.'
             echo 'Windows software Vulkan compute is checked in a separate job.'
@@ -286,12 +288,14 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: webgpu-compute-linux
-          path: artifact/compute.log
+          path: |
+            artifact/compute.log
+            artifact/raster.log
           if-no-files-found: ignore
           retention-days: 14
 
   compute-windows:
-    name: Windows WebGPU compute through software Vulkan
+    name: Windows WebGPU compute and raster through software Vulkan
     needs: build
     runs-on: windows-2022
     timeout-minutes: 15
@@ -321,7 +325,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $expected = $env:EXPECTED_SHA256.ToLowerInvariant()
-          $actual = (Get-FileHash .\webgpu_compute.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $actual = (Get-FileHash .\webgpu_compute -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $expected) { throw 'Executable differs from the Linux build artifact' }
 
           $mesaUrl = 'https://github.com/pal1000/mesa-dist-win/releases/download/26.1.3/mesa3d-26.1.3-release-msvc.7z'
@@ -418,22 +422,25 @@ jobs:
           & .\windows-runtime\vulkaninfo.exe --summary 2>&1 | Tee-Object -FilePath vulkaninfo.log
           if ($LASTEXITCODE -ne 0) { throw "Windows Vulkan runtime setup failed: $LASTEXITCODE" }
 
-      - name: Execute the identical APE and verify numerical readback
+      - name: Execute the identical APE and verify compute and raster readback
         run: |
           $ErrorActionPreference = 'Stop'
           $expected = $env:EXPECTED_SHA256.ToLowerInvariant()
-          $before = (Get-FileHash .\webgpu_compute.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $before = (Get-FileHash .\webgpu_compute -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($before -ne $expected) { throw 'Executable differs from the Linux build artifact' }
           # Default execution must dispatch the shader and check its readback.
           # A missing adapter, API failure, or numerical mismatch fails this job.
-          & .\webgpu_compute.exe 2>&1 | Tee-Object -FilePath compute.log
+          & .\webgpu_compute 2>&1 | Tee-Object -FilePath compute.log
           if ($LASTEXITCODE -ne 0) { throw "WebGPU compute failed: $LASTEXITCODE" }
-          $after = (Get-FileHash .\webgpu_compute.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          & .\webgpu_compute --raster 2>&1 | Tee-Object -FilePath raster.log
+          if ($LASTEXITCODE -ne 0) { throw "WebGPU raster failed: $LASTEXITCODE" }
+          $after = (Get-FileHash .\webgpu_compute -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($after -ne $expected) { throw 'Executable changed during execution' }
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value @(
-            '### Windows WebGPU compute passed',
+            '### Windows WebGPU compute and raster passed',
             '',
             'The executable compiled on Linux dispatched WebGPU compute on Windows and verified its result.',
+            'It also rasterized and read back an offscreen RGBA8 triangle.',
             'The executable kept the original build SHA-256; its application and WebGPU backend were not rebuilt.',
             'Mesa lavapipe executes Vulkan on the CPU. This validates the Windows API path, not physical GPU performance.'
           )
@@ -458,6 +465,7 @@ jobs:
           name: webgpu-compute-windows
           path: |
             artifact/compute.log
+            artifact/raster.log
             artifact/vulkaninfo.log
           if-no-files-found: ignore
           retention-days: 14

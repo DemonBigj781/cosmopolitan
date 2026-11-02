@@ -1,10 +1,11 @@
-# Embedded CPU Vulkan experiment
+# Embedded CPU Vulkan compute and raster experiment
 
 The `webgpu-cpu` branch adds an explicit software execution mode to the
 Cosmopolitan WebGPU prototype. Its intended deployment is one x86-64 APE
 containing the C application, wgpu-native, Mesa lavapipe/llvmpipe, and LLVM's
 CPU code generator. The embedded mode uses the CPU and needs no OS-native
-Vulkan loader or Mesa driver package.
+Vulkan loader or Mesa driver package. It now covers both compute pipelines and
+an offscreen graphics pipeline with texture readback.
 
 The project favors C where practical. Its deployment requirement is one
 identical executable for Windows and Linux; it does not require every
@@ -25,10 +26,17 @@ reported zero native Vulkan loader opens, and left the executable hash unchanged
 The earlier Windows/Linux results in [README.md](README.md) used external Mesa
 drivers; they are a separate baseline and do not establish this embedded mode.
 
+On November 2, 2026, the current local source also passed the new embedded
+`--raster` check on Linux x86-64. It compiled vertex and fragment WGSL, drew a
+triangle into a 64-by-64 RGBA8 texture, read the texture back through WebGPU,
+verified 1,152 covered pixels and the expected center/corner colors, and
+reported zero native Vulkan-loader opens. The CI workflows now include the
+raster workload, but the historical CI run and artifact below predate it.
+
 ## Verified artifact and results
 
 Download [webgpu-cpu-ape-x86_64](https://github.com/DemonBigj781/cosmopolitan-lua/actions/runs/37492821586/artifacts/11429053420)
-from the successful run. Its `webgpu_compute.exe` is **66,213,389 bytes
+from the successful run. Its `webgpu_compute` is **66,213,389 bytes
 (63.15 MiB)**. Both runtime jobs received this application SHA-256:
 
 ```text
@@ -81,18 +89,19 @@ the recipes under `../llvm_cosmo/` and `../lavapipe/` for dependency pins and
 portability patches. The first build is substantially larger than the original
 WebGPU-only build; subsequent builds can reuse the LLVM cache.
 
-The application is still `o/webgpu/webgpu_compute.exe`. On Linux:
+The application is still `o/webgpu/webgpu_compute`. On Linux:
 
 ```sh
-o/webgpu/ape-x86_64.elf o/webgpu/webgpu_compute.exe --software
-o/webgpu/ape-x86_64.elf o/webgpu/webgpu_compute.exe --software --matmul
+o/webgpu/ape-x86_64.elf o/webgpu/webgpu_compute --software
+o/webgpu/ape-x86_64.elf o/webgpu/webgpu_compute --software --matmul
+o/webgpu/ape-x86_64.elf o/webgpu/webgpu_compute --software --raster
 ```
 
 For distribution as a single file, Linux can bootstrap the loader already
 bundled inside the application:
 
 ```sh
-sh ./webgpu_compute.exe --software --matmul
+sh ./webgpu_compute --software --matmul
 ```
 
 The initial shell path needs `uname`, `mkdir`, `dd`, `gzip`, `chmod`, and `mv`.
@@ -106,8 +115,9 @@ environments where those shell utilities are unavailable.
 On Windows x86-64, copy that same executable and run:
 
 ```powershell
-.\webgpu_compute.exe --software
-.\webgpu_compute.exe --software --matmul
+.\webgpu_compute --software
+.\webgpu_compute --software --matmul
+.\webgpu_compute --software --raster
 ```
 
 `--version` checks the linked C/Rust WebGPU API without creating a Vulkan
@@ -121,7 +131,7 @@ executable: WGSL is translated to SPIR-V, Mesa lowers it to its shader
 representation, and LLVM generates CPU machine code for that host. There is
 no invocation of an installed C compiler in this execution path.
 
-## What the numerical checks exercise
+## What the compute and raster checks exercise
 
 The default compute check runs the embedded Collatz shader and compares every
 readback value against `[0, 1, 7, 2]`. It exercises integer arithmetic, loops,
@@ -135,10 +145,19 @@ checks all 143 f32 results with a documented absolute/relative tolerance in
 the source. The inputs must also remain unchanged. This is a correctness
 check, not an inference benchmark.
 
-Both software checks require a WebGPU CPU adapter, identify the embedded
+All three software workloads require a WebGPU CPU adapter, identify the embedded
 provider, and require a zero native Vulkan loader-open count. The count covers
 the application's loader boundary. The separate filesystem isolation check
 tests the full implementation's dependency on external files and libraries.
+
+`--raster` builds a WebGPU render pipeline from embedded vertex and fragment
+WGSL. It draws one triangle without a vertex buffer into a 64-by-64
+`RGBA8Unorm` texture, copies that texture into a row-aligned mapped buffer, and
+checks the center color, all four clear-black corners, and a bounded covered-
+pixel count. This proves triangle setup, vertex and fragment shader execution,
+color attachment writes, raster coverage, texture-to-buffer copy, and CPU
+readback through the embedded Mesa/LLVM stack. It does not create a surface,
+window, swapchain, compositor, or browser integration.
 
 ## How the static driver is reached
 
@@ -146,6 +165,10 @@ The application explicitly calls `cosmo_wgpu_lavapipe_register()`. Its strong
 reference brings the Mesa entry point into the final link. The driver registers
 `lvp_GetInstanceProcAddr` with `runtime/vulkan_loader.c`, then the application
 selects the `embedded` provider before creating its WebGPU instance.
+
+The registration glue defaults `LP_NUM_THREADS` to 2 only when the application
+has not supplied a value. This is the verified worker count for the current
+Cosmopolitan llvmpipe raster path; explicit application overrides are preserved.
 
 Embedded Vulkan function pointers use the same System V/Cosmopolitan calling
 convention as the application, on both operating systems. They do not pass
@@ -217,9 +240,10 @@ the embedded entry trace, and exactly zero native Vulkan loader opens.
 
 ## Boundaries and later AI work
 
-The first target is integer and f32 compute on x86-64 Windows/Linux. Half
-precision, other CPU architectures, rendering, physical GPU compatibility,
-and performance require their own evidence. In particular, f16 lowering can
+The first target is integer/f32 compute and basic offscreen RGBA8 rasterization
+on x86-64 Windows/Linux. Half precision, other CPU architectures, window-system
+surfaces, presentation, physical GPU compatibility, and performance require
+their own evidence. In particular, f16 lowering can
 require additional statically registered conversion and rounding helpers.
 
 This program contains compute checks rather than a model loader or inference

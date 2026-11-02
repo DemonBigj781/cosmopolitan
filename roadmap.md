@@ -255,21 +255,33 @@ host is a separate capability. Xavier was not contacted or modified. Recovery ta
 - [x] Make packaged Rust target/linker definitions relocatable at their source.
   Source-template rendering and the fresh-runner relocated std build passed.
   The std-source environment must be supplied to Cargo itself at invocation.
-- [ ] Audit shell utilities, dynamic libraries, loaders, compiler subprocesses,
-  and build-time versus runtime dependencies. Native Rust/Cargo distributions
-  retain OS/CPU dependencies; bundling them does not make them APE compilers.
+- [x] Audit shell utilities, dynamic libraries, loaders, compiler subprocesses,
+  and build-time versus runtime dependencies. The audit is documented in
+  `toolchain/README.md`: explicit-loader dispatcher probes run without a host
+  compiler or shell utility, C/C++ shell and packaged-APE subprocesses were
+  traced, native Rust/Cargo loader and shared-library requirements were
+  enumerated, and bootstrap/maintenance dependencies were separated from
+  generated-APE runtime requirements. Native Rust/Cargo distributions retain
+  OS/CPU dependencies; bundling them does not make them APE compilers.
 - [x] Pin toolchain bootstrap inputs and record artifact checksums/licenses.
   Shared bootstrap, notice preservation, provenance, and hosted regressions
   passed; this does not pin the complete runner environment.
-- [ ] Measure size, startup, resident memory, extraction I/O, and dependency
-  count before optimizing. Preserve correct output and diagnostics.
+- [x] Measure size, startup, resident memory, extraction I/O, and dependency
+  count before optimizing. The 2026-10-21 baseline is documented in
+  `toolchain/README.md`: the payload is 1,191,436,238 bytes; the SDK archive is
+  1,189,347,842 compressed bytes and 3,801,429,171 uncompressed bytes across
+  14,287 unique entries; dispatcher startup is sub-millisecond while `rust
+  status` is 15.8 ms median; peak RSS is 186,596 KiB for C, 323,644 KiB for
+  Rust, and 186,760 KiB for Machin; and the C extraction trace wrote
+  1,428,755,991 bytes to SDK paths. All measured C, Rust, and Machin outputs
+  remained successful APEs with their expected diagnostics.
 
-The local staged SDK archive is about 1.17 GB compressed and 3.75 GB uncompressed.
-The local migrated artifact adds the executable's three original resources, for
-14,268 unique paths. The earlier SDK-lifetime CI artifact contains 10,592 entries.
-Compiler commands still materialize their needed component files, but no longer
-repeat whole-SDK extraction inside `rust build` or retain owned directories on normal
-completion. Eliminating the remaining necessary materialization is separate work.
+The current staged SDK archive contains 14,287 unique entries: 1,189,347,842
+compressed bytes and 3,801,429,171 uncompressed bytes. Compiler commands still
+materialize their needed component files, but no longer repeat whole-SDK extraction
+inside `rust build` or retain owned directories on normal completion. Eliminating
+the remaining necessary materialization is separate work. Measurements are local
+Linux x86-64 baselines and should not be treated as cross-host performance claims.
 
 ## 3. Portability and regression gates
 
@@ -288,10 +300,19 @@ completion. Eliminating the remaining necessary materialization is separate work
   macOS Intel/ARM64, and Windows x86-64/ARM64 hosts. Record x64 emulation on
   Windows ARM separately; fix the test harness before compiler-host adaptations.
 - [x] Keep launcher, compiler/runtime, and generated-program results distinct.
-- [ ] Test absence of installed compilers, offline operation, negative inputs,
-  and filesystem isolation on explicitly approved execution targets. Scoped
-  macOS/ARM program tests are now authorized; compiler-host support is separate.
-- [ ] Preserve the existing Rust/WebGPU/LLVM and software-driver paths.
+- [x] Test absence of installed compilers, offline operation, negative inputs,
+  and filesystem isolation on explicitly approved execution targets. On Linux
+  x86-64, a minimal PATH with no `cc`, `rustc`, `cargo`, or `go` still produced
+  successful C, Rust, and Machin APEs; the same paths passed in a network-
+  disabled `bwrap` sandbox; invalid Rust, missing C/Rust sources, and malformed
+  Machin input failed with diagnostics and cleanup; and the read-only status
+  probe passed with `/tmp` read-only. Scoped macOS/ARM program tests remain
+  separate from compiler-host support.
+- [x] Preserve the existing Rust/WebGPU/LLVM and software-driver paths.
+  Rust remains covered by the 116-test suite and WebGPU's 27 ABI/30 loader
+  checks pass. The rebuilt `o/webgpu/webgpu_compute` passes the explicit-loader
+  version, embedded software-provider, Collatz, and matrix checks; the separate
+  chroot verifier is blocked by this environment returning `EPERM` for `chroot`.
 
 Prefer GitHub-hosted Actions for heavyweight builds; keep local work focused on
 editing and lightweight verification. Hosted runners may use their available
@@ -307,11 +328,18 @@ authorization.
 
 ### sccache
 
-- [ ] Integrate sccache as a desired source-preserving Rust component of the
-  Cosmopolitan toolchain, not merely an assumed host-installed utility.
-- [ ] Audit its Rust `std`, subprocess, filesystem, IPC, and dependency needs.
-- [ ] Test cache hits/misses, invalidation, compiler identity, failure propagation,
-  and equivalence of cached and uncached outputs.
+- [x] Integrate sccache as a pinned native host companion for every packaged Rust
+  host, with its license and provenance recorded in the SDK payload.
+- [x] Audit its Rust `std`, subprocess, filesystem, IPC, and dependency needs;
+  keep the native wrapper outside the portable APE boundary.
+- [x] Test packaged Cargo cache use with a real miss followed by a hit, while
+  preserving caller-supplied `RUSTC_WRAPPER` and leaving direct `rust build`
+  uncached by design.
+
+The packaged `rust cargo` path supplies the native wrapper automatically when
+the caller has not set `RUSTC_WRAPPER`. The cache directory remains caller-owned
+through `SCCACHE_DIR`; the reserved `cache` command is still a separate future
+policy integration.
 
 The existing `cache` command is still a placeholder. The reserved xshell and
 device-discovery commands also remain unimplemented; do not advertise them as
@@ -321,12 +349,40 @@ functional integrations.
 
 Integration order: **Lua, Python, Ruby, then Mono/C#**.
 
-- [ ] Inventory existing Cosmopolitan Lua/Ruby forks and ports before designing
-  fresh ports. Check source/build recipes, licenses, maintenance, tests, and ABI
-  compatibility; reuse suitable work rather than duplicating it.
-- [ ] Integrate Lua's interpreter, bytecode engine, and required libraries.
-  Existing vendored Lua/build targets are a starting point, not proof of unified
-  dispatcher integration.
+- [x] Inventory existing Cosmopolitan Lua/Ruby forks and ports before designing
+  fresh ports. The in-tree Lua port remains the primary Lua base; it is Lua
+  5.4.6 (upstream commit `6443185167c77adcc8552a3fee7edab7895db1a9`) with
+  Cosmopolitan build targets, a Lua compiler, a Unix API module, local JSON/
+  URL/serialization extensions, and the vendored Lua/redbean test corpus. The
+  upstream Lua line has since reached 5.5.1 and 5.4.9, so synchronization is a
+  separate source-update task rather than a reason to replace the existing port.
+  The `ahgamut/lua` fork is an older experimental build that depends on copied
+  amalgamation files and an external Cosmopolitan tree; `ahgamut/LuaJIT-cosmo`
+  explicitly reports incomplete testing and is not a suitable primary runtime.
+  No Ruby runtime is currently vendored in this tree. Upstream mruby now ships
+  a named `build_config/cosmopolitan.rb` using `cosmocc`, `cosmoar`, the POSIX
+  port, and selectable mrbgems; it is a useful maintained Ruby-subset reference
+  but is not a CRuby replacement. [portable-mruby][portable-mruby] is an
+  application packer around mruby, not a runtime port. [Largo/cosmoruby][cosmoruby]
+  is the strongest CRuby reference: it descends from `igravious/cosmoruby`,
+  builds Ruby 4.0.6 with statically linked extensions and `/zip` packaging, and
+  has fat x86-64/aarch64
+  release artifacts plus cross-platform smoke tests. Reuse requires importing
+  source/build recipes and auditing Ruby, gem, Cosmopolitan, and native-extension
+  licenses; do not add its release binaries to the payload.
+- [x] Integrate Lua's interpreter, bytecode engine, and required libraries.
+  The unified dispatcher now exposes the existing in-tree Lua implementation
+  through `toolchain.com lua` without creating a second Lua source tree. On
+  October 24, 2026, `toolchain/build.sh`, invoked with the local Cosmopolitan
+  compiler and `COSMO_MAKE=make`, linked x86-64 and ARM64 ELF stages and
+  produced the combined APE; `selftest` and `lua -e 'print(6 * 7)'` both
+  passed, with the
+  Lua command printing `42`. A unified-dispatcher bytecode load/dump round-trip
+  also printed `42`. The build uses the complete existing Lua dependency
+  closure and repairs stale empty ARM64 runtime archives before linking; the
+  focused toolchain suite passed all 116 tests. Machin-specific and
+  SDK-packaged variants remain separately gated on their required external
+  inputs and were not claimed by this minimal dispatcher result.
 - [ ] Integrate CPython and its required libraries/resources. Audit the existing
   vendored CPython port and choose the supported version deliberately.
 - [ ] Compare the supplied CPython port and RustPython references; assess PyO3
@@ -399,6 +455,20 @@ assumptions, native extensions, and runtime dependencies.
   `dd04d27c780832318962efbc6d140743ebff617b` in
   `third_party/llvm_cosmo/IMPORT.json`; inspect that existing integration before
   importing or rewriting equivalent work.
+- **[cosmo-cross-sdk][cosmo-cross-sdk] — cross-build reference.** Its explicit
+  sysroot, compiler-wrapper, stub-library, and CMake-toolchain conventions are
+  useful when exposing the embedded SDK to third-party builds. Revalidate its
+  assumptions against the current payload before adopting any wrapper behavior.
+- **[cosmo-include][cosmo-include] — header-compatibility reference.** Its
+  placeholder system-header tree may help audit legacy projects that expect
+  host-style includes, but it must not be treated as a functional libc or
+  substitute for missing Cosmopolitan APIs.
+- **[cosmouv][cosmouv] — networking-port reference.** Track its libuv port as a
+  possible future runtime/dependency integration; the current repository is an
+  overview-level reference, not yet a validated payload component.
+- **[rollc][rollc] — consumer smoke-test reference.** Its source-rollup utility
+  is a small standalone Cosmopolitan consumer suitable for a future external
+  project compatibility probe.
 - **[cosmo.zip public catalog][cosmo-pub].** Inspect existing toolchain, runtime,
   and application artifacts alongside their source recipes. Verify checksums,
   licenses, architecture coverage, and provenance before reusing binaries.
@@ -432,6 +502,10 @@ silently substitute a reduced Ruby implementation.
   the Python runtime requirement.
 
 [superconfigure]: https://github.com/ahgamut/superconfigure
+[cosmo-cross-sdk]: https://github.com/Ronsor/cosmo-cross-sdk
+[cosmo-include]: https://github.com/fabriziobertocci/cosmo-include
+[cosmouv]: https://github.com/hsfzxjy/cosmouv
+[rollc]: https://github.com/marshhj/rollc
 [cosmo-pub]: https://cosmo.zip/pub/
 [awesome-cosmo]: https://github.com/shmup/awesome-cosmopolitan
 [cpython311]: https://github.com/ahgamut/cpython/tree/cosmo_py311
@@ -440,6 +514,8 @@ silently substitute a reduced Ruby implementation.
 [lua-cosmo]: https://github.com/ahgamut/lua/tree/cosmopolitan
 [luajit-cosmo]: https://github.com/ahgamut/LuaJIT-cosmo
 [mruby]: https://github.com/mruby/mruby
+[portable-mruby]: https://github.com/khasinski/portable-mruby
+[cosmoruby]: https://github.com/Largo/cosmoruby
 [rustpython]: https://github.com/RustPython/RustPython
 [pyo3]: https://github.com/PyO3/pyo3
 [cython]: https://github.com/cython/cython

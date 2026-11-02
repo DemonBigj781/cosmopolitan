@@ -26,12 +26,13 @@ def describe_tree(root: Path):
 
 
 def package_metadata(repo, cosmocc, rust_compiler=None, rust_source=None, rust_sdk=None,
-                     nodejs=None, machin_source=None, machin_binary=None):
+                     nodejs=None, webgpu=None, machin_source=None, machin_binary=None):
     inputs = {"cosmocc": describe_tree(cosmocc)}
     notices = {}
     extra_files = {}
     for key, path in (("rust_compiler", rust_compiler), ("rust_ape_source", rust_source),
                       ("rust_ape_sdk", rust_sdk), ("nodejs", nodejs),
+                      ("webgpu", webgpu),
                       ("machin", machin_source)):
         if path is not None:
             inputs[key] = describe_tree(path)
@@ -52,6 +53,14 @@ def package_metadata(repo, cosmocc, rust_compiler=None, rust_source=None, rust_s
         for host in hosts:
             relative = "hosts/" + host + "/share/doc/nodejs/LICENSE"
             notices["nodejs/" + relative] = sha256(nodejs / relative)
+    if webgpu:
+        license_root = webgpu / "licenses"
+        if not license_root.is_dir():
+            raise ValueError("WebGPU SDK licenses are missing")
+        for path in sorted(license_root.rglob("*")):
+            if path.is_file():
+                relative = path.relative_to(webgpu).as_posix()
+                notices["webgpu/" + relative] = sha256(path)
     if machin_source:
         license_path = machin_source / "LICENSE"
         archive_name = "toolchain-metadata/licenses/machin/LICENSE"

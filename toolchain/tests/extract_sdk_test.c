@@ -12,6 +12,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[3], "rust")) component = SDK_RUST;
     else if (!strcmp(argv[3], "ape")) component = SDK_RUST_APE;
     else if (!strcmp(argv[3], "nodejs")) component = SDK_NODEJS;
+    else if (!strcmp(argv[3], "webgpu")) component = SDK_WEBGPU;
     else return 2;
   }
   if (((component == SDK_RUST || component == SDK_NODEJS) != (argc == 5))) return 2;

@@ -2,19 +2,21 @@
 
 For the `webgpu-cpu` branch's static Mesa/LLVM CPU-driver experiment, see
 [Embedded CPU Vulkan](CPU.md). Its identical executable has passed native
-Windows and isolated Linux CPU compute in CI; the artifact and exact checksum
-are recorded there. That validation is separate from the external-driver
-baseline described below.
+Windows and isolated Linux CPU compute in CI, and the current source adds a
+verified offscreen triangle raster/readback path. The historical artifact and
+exact checksum are recorded there. That validation is separate from the
+external-driver baseline described below.
 
 This experimental branch builds a **C application and wgpu-native's Rust
 implementation into one x86-64 Actually Portable Executable (APE)**. The selected
 backend is Vulkan. It does not bundle separately compiled Windows and Linux
 copies of wgpu-native.
 
-The initial program is a headless compute check. CI has compiled one executable
+The initial program is a headless compute and raster check. CI has compiled one executable
 on Linux, then run that exact file on **both Windows and Linux**. Both compute
 jobs compiled the embedded WGSL shader, dispatched four workgroups, and
-verified every result through Mesa lavapipe. Startup and full compute are
+verified every result through Mesa lavapipe. The `--raster` workload also draws
+an offscreen RGBA8 triangle and validates mapped texture pixels. Startup and full compute are
 separate checks, and the executable's hash remains unchanged after each run.
 Lavapipe is a CPU/software adapter; physical GPU acceleration still needs
 hardware tests. This is an experimental compute foundation for an AI runtime.
@@ -42,7 +44,7 @@ The build produces:
 
 | Output | Purpose |
 | --- | --- |
-| `o/webgpu/webgpu_compute.exe` | The one x86-64 APE containing C, Rust, WebGPU, and the Vulkan backend |
+| `o/webgpu/webgpu_compute` | The x86-64 C/Rust/WebGPU/Vulkan APE |
 | `o/webgpu/ape-x86_64.elf` | Matching explicit Linux loader, useful where APE is not registered |
 | `o/webgpu/BUILD.json` | Source/toolchain revisions, lockfile hash, executable hash |
 | `o/webgpu/SHA256SUMS` | Identity checks before and after execution |
@@ -78,11 +80,12 @@ and after execution. It imposes a process timeout in addition to the sample's
 bounded callback polling. To choose a particular Vulkan implementation, set
 `VK_DRIVER_FILES` to the driver's ICD JSON file before running.
 
-On Windows x86-64, copy the **same** `webgpu_compute.exe` and run in PowerShell:
+On Windows x86-64, copy the **same** `webgpu_compute` and run in PowerShell:
 
 ```powershell
-.\webgpu_compute.exe --version
-.\webgpu_compute.exe
+.\webgpu_compute --version
+.\webgpu_compute
+.\webgpu_compute --raster
 ```
 
 The compute command needs a compatible installed Vulkan loader/driver. The
@@ -157,7 +160,8 @@ results do not establish a physical GPU vendor compatibility matrix.
    scalar call adapter with metadata for **684** procedures from the exact ash
    dispatch tables. The Windows adapter handles mixed integer/float arguments
    and stack arguments; a generic integer-only cast would not suffice.
-6. The C smoke program embeds WGSL and checks its numerical results. It needs
+6. The C smoke program embeds compute, vertex, and fragment WGSL. It checks
+   numerical buffer results and an offscreen RGBA8 triangle readback. It needs
    no browser, window, display server, or external shader file.
 7. `configure_pe.py` raises the generated executable's Windows native thread
    stack reservation from the SDK's 64 KiB to 8 MiB, retaining the 4 KiB initial
@@ -174,9 +178,9 @@ results do not establish a physical GPU vendor compatibility matrix.
   and foreign-thread TLS design. The patch rejects debug/validation flags and
   custom native instance callbacks before loading Vulkan. The sample uses
   flags zero. WebGPU's normal API validation remains enabled.
-- **Headless scope:** surfaces, swapchains, rendering, external resource
+- **Headless scope:** basic offscreen triangle rasterization and texture
+  readback are covered. Surfaces, swapchains, presentation, external resource
   sharing, and broader multithreaded driver behavior require further tests.
-  Forward scalar ABI coverage alone does not establish those features.
 - **Host dependency:** The native provider uses OS-specific Vulkan loaders and
   drivers. The separate `--software` build and its embedded driver are described
   in [CPU.md](CPU.md).

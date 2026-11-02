@@ -26,7 +26,7 @@ elif [[ -n "${MACHIN:-}" && -n "${MACHIN_SRC:-}" ]]; then
 fi
 # Compile every object that links against repository-built archives with the
 # same repository compiler, flags, headers, and ABI for each architecture.
-object_names=(ape_toolchain embedded-sdk-driver native_zip machin_build rust_build tempdir)
+object_names=(ape_toolchain embedded-sdk-driver native_zip machin_build project_manifest rust_build tempdir)
 x86_objects=()
 arm_objects=()
 arm_companion_objects=()
@@ -58,16 +58,16 @@ MACHIN_ARM_OBJECT=""
 if [[ -n "$MACHIN_OBJECT" ]]; then
   MACHIN_ARM_OBJECT="${MACHIN_OBJECT%/*}/.aarch64/${MACHIN_OBJECT##*/}"
 fi
-TOOLCHAIN_OBJECTS="${x86_objects[*]} o//toolchain/lua_entry.o ${MACHIN_OBJECT}"
-TOOLCHAIN_ARM_OBJECTS="${arm_companion_objects[*]} o/toolchain/.aarch64/lua_entry.o ${MACHIN_ARM_OBJECT}"
+TOOLCHAIN_OBJECTS="${x86_objects[*]} o//toolchain/lua_entry.o o//tool/net/ljson.o ${MACHIN_OBJECT}"
+TOOLCHAIN_ARM_OBJECTS="${arm_companion_objects[*]} o/toolchain/.aarch64/lua_entry.o o/tool/net/.aarch64/ljson.o ${MACHIN_ARM_OBJECT}"
 TOOLCHAIN_DEPS="$LUA_DEPS"
 export TOOLCHAIN_OBJECTS TOOLCHAIN_ARM_OBJECTS TOOLCHAIN_DEPS COSMOCC COSMO_MAKE
 sh toolchain/link-unified-ape.sh o/toolchain/toolchain.com
 mkdir -p o/toolchain/compiler-payload
-python3 - "$COSMOCC_ROOT" "${RUST_APE_SOURCE:-}" "${RUST_COMPILER_ROOT:-}" "${RUST_APE_SDK_ROOT:-}" "${NODEJS_ROOT:-}" "$PWD/toolchain" "${MACHIN_SRC:-}" "${MACHIN:-}" <<'PY'
+python3 - "$COSMOCC_ROOT" "${RUST_APE_SOURCE:-}" "${RUST_COMPILER_ROOT:-}" "${RUST_APE_SDK_ROOT:-}" "${NODEJS_ROOT:-}" "${WEBGPU_SDK_ROOT:-}" "$PWD/toolchain" "${MACHIN_SRC:-}" "${MACHIN:-}" <<'PY'
 import json,os,sys,zipfile,stat
 from pathlib import Path
-sys.path.insert(0,sys.argv[6])
+sys.path.insert(0,sys.argv[7])
 from rust_sdk_resources import portable_rust_resources
 from provenance import RESOURCE, package_metadata
 root=os.path.realpath(sys.argv[1])
@@ -75,6 +75,7 @@ rust_source=os.path.realpath(sys.argv[2]) if sys.argv[2] else None
 rust_compiler=os.path.realpath(sys.argv[3]) if sys.argv[3] else None
 rust_ape_sdk=os.path.realpath(sys.argv[4]) if sys.argv[4] else None
 nodejs=os.path.realpath(sys.argv[5]) if sys.argv[5] else None
+webgpu=os.path.realpath(sys.argv[6]) if sys.argv[6] else None
 if rust_ape_sdk and not os.path.isfile(os.path.join(rust_ape_sdk,'generated','x86_64-unknown-linux-musl.json')):
     raise SystemExit('RUST_APE_SDK_ROOT must contain generated/x86_64-unknown-linux-musl.json')
 if rust_compiler and not os.path.isfile(os.path.join(rust_compiler,'hosts.json')):
@@ -83,14 +84,21 @@ if rust_source and not os.path.isfile(os.path.join(rust_source,'run.sh')):
     raise SystemExit('RUST_APE_SOURCE must point to third_party/rust_ape')
 if nodejs and not os.path.isfile(os.path.join(nodejs,'hosts.json')):
     raise SystemExit('NODEJS_ROOT must be a staged multi-host Node.js toolkit with hosts.json')
+if webgpu:
+    for relative in ('manifest.json','link.args','include/webgpu.h','include/wgpu.h',
+                     'runtime/vulkan_loader.c','runtime/win64_bridge.c',
+                     'lib/wgpu/libwgpu_native.a','licenses'):
+        if not os.path.exists(os.path.join(webgpu,relative)):
+            raise SystemExit('WEBGPU_SDK_ROOT is missing '+relative)
 metadata,notices=package_metadata(
-    Path(sys.argv[6]).resolve().parent, Path(root),
+    Path(sys.argv[7]).resolve().parent, Path(root),
     Path(rust_compiler) if rust_compiler else None,
     Path(rust_source) if rust_source else None,
     Path(rust_ape_sdk) if rust_ape_sdk else None,
     Path(nodejs) if nodejs else None,
-    Path(sys.argv[7]) if sys.argv[7] and sys.argv[8] else None,
-    Path(sys.argv[8]) if sys.argv[7] and sys.argv[8] else None)
+    Path(webgpu) if webgpu else None,
+    Path(sys.argv[8]) if sys.argv[8] and sys.argv[9] else None,
+    Path(sys.argv[9]) if sys.argv[8] and sys.argv[9] else None)
 out='o/toolchain/compiler-payload/cosmocc-sdk.zip'
 files=[]
 for directory,_,names in os.walk(root):
@@ -160,6 +168,17 @@ with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,al
                     z.write(path,arc)
                 count+=1
         print('Node.js toolkit entries packaged:',count)
+    if webgpu:
+        count=0
+        for directory, dirs, names in os.walk(webgpu):
+            dirs[:] = sorted(dirs)
+            for name in sorted(names):
+                path=os.path.join(directory,name)
+                if not os.path.isfile(path) or os.path.islink(path):
+                    raise SystemExit('WebGPU SDK must contain regular files only: '+path)
+                z.write(path,'webgpu/'+os.path.relpath(path,webgpu))
+                count+=1
+        print('WebGPU SDK entries packaged:',count)
     if rust_ape_sdk:
         generated=portable_rust_resources(Path(rust_ape_sdk))
         count=0
@@ -203,6 +222,9 @@ with zipfile.ZipFile(out) as z:
         assert 'rust-ape-sdk/generated/x86_64-unknown-linux-musl.json' in z.namelist()
     if nodejs:
         assert any(n.startswith('nodejs/hosts/') and os.path.basename(n) in ('node','node.exe') for n in names)
+    if webgpu:
+        assert 'webgpu/manifest.json' in names
+        assert 'webgpu/lib/wgpu/libwgpu_native.a' in names
 print('payload:',out,'files:',len(files),'bytes:',os.path.getsize(out))
 PY
 # Preserve existing executable resources and use native absolute ZIP offsets.
