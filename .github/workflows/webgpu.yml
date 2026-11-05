@@ -1,0 +1,461 @@
+name: Experimental Cosmopolitan WebGPU
+run-name: WebGPU APE - ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LC_ALL: C
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    # The default branch registers this workflow but lacks its build sources.
+    if: ${{ github.ref != 'refs/heads/master' }}
+    name: Build one x86-64 APE with static WebGPU
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      executable_sha256: ${{ steps.package.outputs.executable_sha256 }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates clang curl file git \
+            libclang-dev pkg-config python3 unzip
+
+      # build.sh owns the pinned rust-ape, Rust, Cosmocc, and wgpu revisions.
+      # This is the only job that compiles or links the application/backend.
+      - name: Build the portable application and WebGPU implementation once
+        run: |
+          set -euo pipefail
+          mkdir -p o/webgpu
+          bash third_party/wgpu_native/build.sh 2>&1 | tee o/webgpu/build.log
+
+      - name: Verify portable output and record its identity
+        id: package
+        run: |
+          set -euo pipefail
+          test -s o/webgpu/webgpu_compute
+          test -s o/webgpu/ape-x86_64.elf
+          test -s o/webgpu/BUILD.json
+          test -d o/webgpu/licenses
+          file o/webgpu/webgpu_compute o/webgpu/ape-x86_64.elf
+          # Catch accidental Linux-only .dbg/ELF packaging before runtime jobs.
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+
+          data = Path("o/webgpu/webgpu_compute").read_bytes()
+          assert data[:2] == b"MZ", "Expected a portable executable with a PE header"
+          pe_offset, = struct.unpack_from("<I", data, 0x3c)
+          assert data[pe_offset:pe_offset + 4] == b"PE\0\0", "Missing PE signature"
+          machine, = struct.unpack_from("<H", data, pe_offset + 4)
+          assert machine == 0x8664, "Expected Windows x86-64 machine code"
+          reserve, commit = struct.unpack_from("<QQ", data, pe_offset + 24 + 72)
+          assert reserve == 8 * 1024 * 1024 and commit == 4096, "Unexpected native thread stack defaults"
+          PY
+          cp LICENSE o/webgpu/LICENSE.cosmopolitan
+          # Preserve build.sh's source/toolchain manifest and license provenance.
+          printf '\nCI repository: %s\nCI commit: %s\nTarget: x86-64 APE\nApplication/backend: compiled once on Linux\nStartup tests: Linux and Windows\nCompute/raster tests: Linux and Windows software Vulkan\n' \
+            "$GITHUB_REPOSITORY" "$GITHUB_SHA" >> o/webgpu/BUILD-INFO.txt
+          cd o/webgpu
+          sha256sum webgpu_compute ape-x86_64.elf \
+            BUILD.json BUILD-INFO.txt LICENSE.cosmopolitan > SHA256SUMS
+          read -r executable_sha256 _ < SHA256SUMS
+          printf 'executable_sha256=%s\n' "$executable_sha256" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Experimental WebGPU APE built once'
+            echo
+            echo 'The runtime jobs download this executable; they do not rebuild its WebGPU backend.'
+            printf '\nExecutable SHA-256: `%s`\n' "$executable_sha256"
+            echo
+            echo 'Linux and Windows startup checks are separate from software Vulkan compute checks.'
+            echo 'Compute jobs exercise software Vulkan; physical GPU acceleration is not covered.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the executable used by every runtime job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: webgpu-ape-x86_64
+          path: |
+            o/webgpu/webgpu_compute
+            o/webgpu/ape-x86_64.elf
+            o/webgpu/SHA256SUMS
+            o/webgpu/BUILD.json
+            o/webgpu/BUILD-INFO.txt
+            o/webgpu/LICENSE*
+            o/webgpu/NOTICE*
+            o/webgpu/licenses/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: webgpu-build-log
+          path: |
+            o/webgpu/build.log
+            o/webgpu/webgpu_compute.dbg
+          if-no-files-found: ignore
+          retention-days: 14
+
+  startup-linux:
+    # The default branch registers this workflow but lacks its build sources.
+    if: ${{ github.ref != 'refs/heads/master' }}
+    name: Linux startup of the identical APE
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
+        working-directory: artifact
+    env:
+      EXPECTED_SHA256: ${{ needs.build.outputs.executable_sha256 }}
+    steps:
+      - name: Download the already-built application
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: webgpu-ape-x86_64
+          path: artifact
+
+      - name: Verify identity and call the embedded WebGPU version API
+        run: |
+          set -euo pipefail
+          sha256sum --check --strict SHA256SUMS
+          printf '%s  webgpu_compute\n' "$EXPECTED_SHA256" | sha256sum --check --strict -
+          chmod +x ape-x86_64.elf webgpu_compute
+          # An explicit loader avoids binfmt_misc setup and APE self-modification.
+          timeout 60s ./ape-x86_64.elf ./webgpu_compute --version 2>&1 | tee startup.log
+          sha256sum --check --strict SHA256SUMS
+          {
+            echo '### Linux x86-64 startup passed'
+            echo
+            echo 'The original executable called wgpuGetVersion and kept its SHA-256 unchanged.'
+            echo 'This check does not create a GPU device or execute a shader.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Linux startup diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: webgpu-startup-linux
+          path: artifact/startup.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  startup-windows:
+    # The default branch registers this workflow but lacks its build sources.
+    if: ${{ github.ref != 'refs/heads/master' }}
+    name: Windows startup of the identical APE
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: artifact
+    env:
+      EXPECTED_SHA256: ${{ needs.build.outputs.executable_sha256 }}
+    steps:
+      - name: Download the already-built application
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: webgpu-ape-x86_64
+          path: artifact
+
+      - name: Verify identity and call the embedded WebGPU version API
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = $env:EXPECTED_SHA256.ToLowerInvariant()
+          $before = (Get-FileHash -Algorithm SHA256 .\webgpu_compute).Hash.ToLowerInvariant()
+          if ($before -ne $expected) { throw 'Executable differs from the Linux build artifact' }
+          & .\webgpu_compute --version 2>&1 | Tee-Object -FilePath startup.log
+          if ($LASTEXITCODE -ne 0) { throw "WebGPU startup failed with exit code $LASTEXITCODE" }
+          $after = (Get-FileHash -Algorithm SHA256 .\webgpu_compute).Hash.ToLowerInvariant()
+          if ($after -ne $expected) { throw 'Executable changed during execution' }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value @(
+            '### Windows x86-64 startup passed',
+            '',
+            'The executable compiled on Linux called wgpuGetVersion and kept its SHA-256 unchanged.',
+            'This check does not create a GPU device or execute a shader.'
+          )
+
+      - name: Upload Windows startup diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: webgpu-startup-windows
+          path: artifact/startup.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  compute-linux:
+    # The default branch registers this workflow but lacks its build sources.
+    if: ${{ github.ref != 'refs/heads/master' }}
+    name: Linux WebGPU compute and raster through software Vulkan
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      EXPECTED_SHA256: ${{ needs.build.outputs.executable_sha256 }}
+      WGPU_BACKEND: vulkan
+    steps:
+      - name: Download the already-built application
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: webgpu-ape-x86_64
+          path: artifact
+
+      # Mesa is the runner's Vulkan driver, not a separately built wgpu backend.
+      # Cosmopolitan currently invokes cc to build its Linux dlopen helper on
+      # first use. This job does not prove deployment without a target compiler.
+      - name: Install Vulkan and the Linux native-loader prerequisite
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libvulkan1 mesa-vulkan-drivers
+
+      - name: Execute compute and raster with verified readback
+        working-directory: artifact
+        run: |
+          set -euo pipefail
+          sha256sum --check --strict SHA256SUMS
+          printf '%s  webgpu_compute\n' "$EXPECTED_SHA256" | sha256sum --check --strict -
+          chmod +x ape-x86_64.elf webgpu_compute
+          shopt -s nullglob
+          icds=(/usr/share/vulkan/icd.d/lvp_icd*.json)
+          if (( ${#icds[@]} != 1 )); then
+            echo '::error::Expected exactly one Mesa lavapipe ICD on this x86-64 runner'
+            exit 1
+          fi
+          export VK_DRIVER_FILES="${icds[0]}"
+          export VK_ICD_FILENAMES="$VK_DRIVER_FILES"
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/webgpu-xdg"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 0700 "$XDG_RUNTIME_DIR"
+          printf 'Software Vulkan ICD: %s\n' "$VK_DRIVER_FILES"
+          # Default execution must dispatch a shader, read back, and compare results.
+          # Missing adapters, validation errors, and mismatches must fail the job.
+          timeout 180s ./ape-x86_64.elf ./webgpu_compute 2>&1 | tee compute.log
+          timeout 180s ./ape-x86_64.elf ./webgpu_compute --raster 2>&1 | tee raster.log
+          sha256sum --check --strict SHA256SUMS
+          {
+            echo '### Linux WebGPU compute and raster passed'
+            echo
+            echo 'The same APE dispatched WebGPU compute through Mesa lavapipe and verified its result.'
+            echo 'It also rasterized a triangle into an offscreen RGBA8 texture and verified pixel readback.'
+            echo 'Lavapipe executes Vulkan on the CPU; this establishes compute correctness, not hardware GPU performance.'
+            echo 'Cosmopolitan currently compiles a small Linux dlopen helper with cc on first use.'
+            echo 'Windows software Vulkan compute is checked in a separate job.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Linux compute diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: webgpu-compute-linux
+          path: |
+            artifact/compute.log
+            artifact/raster.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  compute-windows:
+    # The default branch registers this workflow but lacks its build sources.
+    if: ${{ github.ref != 'refs/heads/master' }}
+    name: Windows WebGPU compute and raster through software Vulkan
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: artifact
+    env:
+      EXPECTED_SHA256: ${{ needs.build.outputs.executable_sha256 }}
+      WGPU_BACKEND: vulkan
+      COSMO_WGPU_TRACE: '1'
+    steps:
+      - name: Download the already-built application
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: webgpu-ape-x86_64
+          path: artifact
+
+      # This Mesa version and x64 file set come from gfx-rs/wgpu's tested
+      # .github/actions/install-mesa/action.yml at commit
+      # 475507a24f8f80cdf94d3ce0a9e2e328c7237e7c. The SHA-256 is the release
+      # asset digest published by pal1000/mesa-dist-win for version 26.1.3.
+      # The loader comes from LunarG's official runtime components ZIP.
+      # Packages remain local to this job. The hosted Windows runner is elevated,
+      # so driver discovery also needs the standard temporary registry entry.
+      - name: Prepare pinned Windows Vulkan runtime and software driver
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = $env:EXPECTED_SHA256.ToLowerInvariant()
+          $actual = (Get-FileHash .\webgpu_compute -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw 'Executable differs from the Linux build artifact' }
+
+          $mesaUrl = 'https://github.com/pal1000/mesa-dist-win/releases/download/26.1.3/mesa3d-26.1.3-release-msvc.7z'
+          $mesaSha = '6dd431f4620cea73970b13e3ffa94f721f2a3924306b8a4283c97648cdb6eb9c'
+          $runtimeUrl = 'https://sdk.lunarg.com/sdk/download/1.4.357.0/windows/VulkanRT-X64-1.4.357.0-Components.zip'
+          $runtimeSha = 'a14672efed15aafc7f5a16572d35cd3a3416eadf670aeee3cdf50ee32d5fbf83'
+
+          Invoke-WebRequest -Uri $mesaUrl -OutFile mesa.7z -TimeoutSec 180 -MaximumRetryCount 3
+          if ((Get-FileHash mesa.7z -Algorithm SHA256).Hash.ToLowerInvariant() -ne $mesaSha) {
+            throw 'Mesa archive checksum mismatch'
+          }
+          Invoke-WebRequest -Uri $runtimeUrl -OutFile vulkan-runtime.zip -TimeoutSec 180 -MaximumRetryCount 3
+          if ((Get-FileHash vulkan-runtime.zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $runtimeSha) {
+            throw 'Vulkan runtime checksum mismatch'
+          }
+
+          # Preserve architecture directories: flat extraction can overwrite an
+          # x64 DLL with its x86 counterpart. Use native Windows archive paths.
+          # This pinned archive has no libglapi.dll; its four files below were
+          # checked against the actual archive, not assumed from upstream CI.
+          $mesaFiles = @(
+            'x64\opengl32.dll',
+            'x64\libgallium_wgl.dll',
+            'x64\vulkan_lvp.dll',
+            'x64\lvp_icd.x86_64.json'
+          )
+          $extractArgs = @('x', 'mesa.7z', '-omesa', '-y', '-r-') + $mesaFiles
+          & 7z.exe @extractArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Mesa extraction failed' }
+          foreach ($relativePath in $mesaFiles) {
+            if (-not (Test-Path (Join-Path 'mesa' $relativePath))) {
+              throw "Missing Mesa file: $relativePath"
+            }
+          }
+
+          $runtimeDir = New-Item -ItemType Directory -Path windows-runtime -Force
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path 'vulkan-runtime.zip').Path)
+          try {
+            foreach ($name in @('vulkan-1.dll', 'vulkaninfo.exe')) {
+              $entry = $zip.GetEntry("VulkanRT-X64-1.4.357.0-Components/x64/$name")
+              if ($null -eq $entry) { throw "Missing Vulkan runtime file: $name" }
+              [System.IO.Compression.ZipFileExtensions]::ExtractToFile(
+                $entry, (Join-Path $runtimeDir.FullName $name), $true
+              )
+            }
+          } finally {
+            $zip.Dispose()
+          }
+          function Assert-X64PE([string] $path) {
+            $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $path).Path)
+            if ($bytes.Length -lt 64 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
+              throw "Invalid PE file: $path"
+            }
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+            if ($peOffset -lt 0 -or $peOffset -gt $bytes.Length - 6 -or
+                [BitConverter]::ToUInt32($bytes, $peOffset) -ne 0x00004550 -or
+                [BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0x8664) {
+              throw "Expected x64 PE file: $path"
+            }
+            Write-Host "Verified x64 PE: $path"
+          }
+          foreach ($relativePath in $mesaFiles) {
+            if ($relativePath.EndsWith('.dll')) {
+              $dll = Join-Path 'mesa' $relativePath
+              Assert-X64PE $dll
+              Copy-Item $dll .
+            }
+          }
+          foreach ($name in @('vulkan-1.dll', 'vulkaninfo.exe')) {
+            Assert-X64PE (Join-Path $runtimeDir.FullName $name)
+          }
+          Copy-Item (Join-Path $runtimeDir.FullName 'vulkan-1.dll') .
+          $icd = (Resolve-Path 'mesa/x64/lvp_icd.x86_64.json').Path
+
+          # Vulkan-Loader v1.4.357 ignores VK_DRIVER_FILES/VK_ICD_FILENAMES at
+          # high Windows integrity. Register this software ICD using its
+          # documented HKLM discovery mechanism; do not disable that safeguard.
+          # https://github.com/KhronosGroup/Vulkan-Loader/blob/v1.4.357/docs/LoaderDriverInterface.md
+          $driverRegistry = 'HKLM:\SOFTWARE\Khronos\Vulkan\Drivers'
+          if (-not (Test-Path -LiteralPath $driverRegistry)) {
+            New-Item -Path $driverRegistry -Force | Out-Null
+          }
+          New-ItemProperty -LiteralPath $driverRegistry -Name $icd -PropertyType DWord -Value 0 -Force | Out-Null
+          Write-Host "Registered software Vulkan ICD: $icd"
+          Add-Content -Path $env:GITHUB_ENV -Value @(
+            "VK_DRIVER_FILES=$icd",
+            "VK_ICD_FILENAMES=$icd",
+            'GALLIUM_DRIVER=llvmpipe'
+          )
+
+      - name: Verify the Windows Vulkan runtime independently
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\windows-runtime\vulkaninfo.exe --summary 2>&1 | Tee-Object -FilePath vulkaninfo.log
+          if ($LASTEXITCODE -ne 0) { throw "Windows Vulkan runtime setup failed: $LASTEXITCODE" }
+
+      - name: Execute the identical APE and verify compute and raster readback
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = $env:EXPECTED_SHA256.ToLowerInvariant()
+          $before = (Get-FileHash .\webgpu_compute -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($before -ne $expected) { throw 'Executable differs from the Linux build artifact' }
+          # Default execution must dispatch the shader and check its readback.
+          # A missing adapter, API failure, or numerical mismatch fails this job.
+          & .\webgpu_compute 2>&1 | Tee-Object -FilePath compute.log
+          if ($LASTEXITCODE -ne 0) { throw "WebGPU compute failed: $LASTEXITCODE" }
+          & .\webgpu_compute --raster 2>&1 | Tee-Object -FilePath raster.log
+          if ($LASTEXITCODE -ne 0) { throw "WebGPU raster failed: $LASTEXITCODE" }
+          $after = (Get-FileHash .\webgpu_compute -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($after -ne $expected) { throw 'Executable changed during execution' }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value @(
+            '### Windows WebGPU compute and raster passed',
+            '',
+            'The executable compiled on Linux dispatched WebGPU compute on Windows and verified its result.',
+            'It also rasterized and read back an offscreen RGBA8 triangle.',
+            'The executable kept the original build SHA-256; its application and WebGPU backend were not rebuilt.',
+            'Mesa lavapipe executes Vulkan on the CPU. This validates the Windows API path, not physical GPU performance.'
+          )
+
+      - name: Remove this job's software-driver registration
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $driverRegistry = 'HKLM:\SOFTWARE\Khronos\Vulkan\Drivers'
+          if ((Test-Path 'mesa/x64/lvp_icd.x86_64.json') -and (Test-Path $driverRegistry)) {
+            $icd = (Resolve-Path 'mesa/x64/lvp_icd.x86_64.json').Path
+            $key = Get-Item -LiteralPath $driverRegistry
+            if ($key.GetValueNames() -contains $icd) {
+              Remove-ItemProperty -LiteralPath $driverRegistry -Name $icd
+            }
+          }
+
+      - name: Upload Windows compute diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: webgpu-compute-windows
+          path: |
+            artifact/compute.log
+            artifact/raster.log
+            artifact/vulkaninfo.log
+          if-no-files-found: ignore
+          retention-days: 14
