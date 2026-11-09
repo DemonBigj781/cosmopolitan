@@ -78,6 +78,78 @@ This pins bootstrap inputs, not the entire build environment: hosted runner
 images, system packages, and rustup itself remain external inputs. It does not
 establish bit-for-bit reproducible builds or additional OS execution support.
 
+## Recursive source rebuild
+
+`package-compiler-sdk.sh` now packages a deterministic `self-build/` kit beside
+the SDK resources. The kit contains the exact toolchain-owned C and generated
+Machin sources, their repository header closure, pinned x86-64 and AArch64 link
+inputs, prebuilt Lua/ljson objects, repository archive dependencies, and response
+files for both linkers. Packaging first creates `toolchain-bootstrap.com`; that
+bootstrap runs `self-build` to create the canonical `toolchain-with-sdk.com`.
+Later generations use the same embedded recipe rather than the repository Make
+rules, so the bootstrap's incidental object layout is not part of the recursive
+identity contract.
+
+`self-build OUTPUT` materializes the complete embedded SDK into an invocation-
+owned temporary directory, recompiles the toolchain sources serially for both
+architectures, links and validates the fat APE, copies every parent ZIP resource
+with the embedded `zipcopy`, runs the new APE's dispatcher self-test, and then
+atomically publishes the executable and `OUTPUT.provenance.json`. The sidecar
+records the generation, parent and artifact hashes, artifact size, self-build
+manifest hash, and embedded SDK metadata hash. Generation-dependent data remains
+outside the APE so descendants can remain byte-identical.
+
+Build one descendant with:
+
+<!-- markdownlint-disable-next-line MD013 -->
+`COSMO_APE_LOADER=/path/to/ape-x86_64.elf /path/to/ape-x86_64.elf toolchain-with-sdk.com self-build child.com`
+
+Validate a mother, child, and grandchild with:
+
+<!-- markdownlint-disable-next-line MD013 -->
+`python3 toolchain/tests/check_recursive_self_build.py --mother o/toolchain/compiler-payload/toolchain-with-sdk.com --ape-loader .cosmocc/4.0.2/bin/ape-x86_64.elf --destination /empty/output/directory --descendants 2`
+
+The checker requires an empty destination, runs every APE self-test, compares
+whole-file SHA-256 values, compares ZIP names/CRCs/sizes/compression and Unix
+metadata, and validates every provenance link. It runs descendants with
+`PATH=/nonexistent`, so an accidental call to host Python, Make, a shell, or a
+compiler fails rather than weakening the self-build proof.
+
+On 2026-11-03, generation 0, its child, and its grandchild were independently
+rebuilt and validated as the same 1,268,136,003-byte APE with SHA-256
+`dc6dc90bfeef1a9411420e655f6f9508e9bb2c255329167ec59686b04b775747`
+and 15,245 identical ZIP entries. This establishes recursive identity for that
+mother and embedded kit; it does not make a fresh repository/bootstrap build
+independent of its external compiler, Python, archive-library, or host inputs.
+
+### Foundation integration and deferred validation
+
+The dedicated foundation branch retains this recursive kit alongside the Rust/
+Machin manifest-library support and the optional whole source-runtime profile.
+The prior recursive-identity result above applies to its recorded historical
+artifact; it has not been repeated for this integrated checkpoint.
+
+The kit now distinguishes generated Machin source, an explicitly supplied pair
+of prebuilt architecture objects, and no Machin compiler. Only source mode
+recompiles Machin. It does not silently include stale generated C files. Header
+closure is collected for both architectures, and ZIP bytes are checked against
+the kit inventory before publication.
+
+`package-compiler-sdk.sh --compile-only` forwards the compile-only option to the
+recursive compiler command and skips dispatcher/Lua/Machin validation probes.
+The direct form is `self-build OUTPUT --compile-only`. These modes still execute
+compiler/linker and artifact-checking utilities. They do not run the descendant's
+dispatcher self-test; provenance records that validation was not run. The default
+commands retain their validation behavior. Output and sidecar are published
+without replacing existing paths, including dangling links. Their publication is
+two separate filesystem operations, not an atomic pair.
+
+Packaged C, Rust and WebGPU components must select the same runtime identity.
+Source-mode packaging verifies the Rust ABI binding and staged WebGPU inventory.
+See [the source-runtime profile](SOURCE_RUNTIME.md) for the distinction between
+content checks, compilation, CPU behavior and GPU validation. Behavioral tests
+remain deferred until the implementation gate is complete.
+
 ## SDK packaging regression tests
 
 Run `python3 -m unittest discover -s toolchain/tests -p 'test_*.py' -v` from the

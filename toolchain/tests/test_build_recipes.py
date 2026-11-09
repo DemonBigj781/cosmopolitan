@@ -11,6 +11,8 @@ PACKAGE_MAKEFILE = ROOT / "toolchain/package-objects.mk"
 MACHIN_LINK_SCRIPT = ROOT / "toolchain/machin-link.sh"
 SELFHOST_LINK_SCRIPT = ROOT / "toolchain/selfhost-link.sh"
 MACHIN_BUILD_SOURCE = ROOT / "toolchain/machin_build.c"
+SELF_BUILD_SOURCE = ROOT / "toolchain/self_build.c"
+SELF_BUILD_PACKAGER = ROOT / "toolchain/package_self_build.py"
 SDK_WORKFLOW = ROOT / ".github/workflows/rust-ape-sdk-embed.yml"
 
 
@@ -36,6 +38,7 @@ class BuildRecipeTest(unittest.TestCase):
             "machin_build",
             "project_manifest",
             "rust_build",
+            "self_build",
             "tempdir",
         ):
             with self.subTest(name=name):
@@ -74,13 +77,68 @@ class BuildRecipeTest(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertLess(script.index(command), provenance)
 
+    def test_packaged_ape_canonicalizes_itself_with_the_embedded_build_kit(self):
+        script = PACKAGE_SCRIPT.read_text()
+
+        self.assertIn("python3 toolchain/package_self_build.py", script)
+        self.assertIn("toolchain-bootstrap.com", script)
+        self.assertIn(
+            '"$APE_LOADER" o/toolchain/compiler-payload/toolchain-bootstrap.com '
+            'self-build "$SELF_BUILD_CANDIDATE"',
+            script,
+        )
+        self.assertIn(
+            'mv -f "$SELF_BUILD_CANDIDATE" '
+            "o/toolchain/compiler-payload/toolchain-with-sdk.com",
+            script,
+        )
+        self.assertLess(
+            script.index('toolchain-bootstrap.com self-build "$SELF_BUILD_CANDIDATE"'),
+            script.index("toolchain-with-sdk.com selftest"),
+        )
+
+    def test_recursive_packaging_has_explicit_compile_only_gate(self):
+        script = PACKAGE_SCRIPT.read_text()
+        self.assertIn("--compile-only", script)
+        self.assertIn('SELF_BUILD_ARGS=(--compile-only)', script)
+        self.assertIn('if [[ "$PACKAGE_COMPILE_ONLY" != true ]]; then', script)
+        self.assertIn('"${SELF_BUILD_MACHIN_ARGS[@]}"', script)
+        self.assertIn('--machin-source "$PWD/o/toolchain/compiler.c"', script)
+        self.assertIn('--machin-object "$MACHIN_OBJECT"', script)
+
+    def test_recursive_builder_invokes_each_compiler_serially(self):
+        source = SELF_BUILD_SOURCE.read_text()
+
+        self.assertIn('"bin/compile.ape"', source)
+        self.assertIn('"bin/x86_64-linux-cosmo-gcc"', source)
+        self.assertIn('"bin/aarch64-linux-cosmo-gcc"', source)
+        self.assertNotIn("fork_compile", source)
+        self.assertNotIn("parallel", source.lower())
+        self.assertLess(
+            source.index('compile_object(root,"x86_64"'),
+            source.index('compile_object(root,"aarch64"'),
+        )
+
+    def test_self_build_packager_records_source_and_link_inventory(self):
+        source = SELF_BUILD_PACKAGER.read_text()
+
+        for contract in (
+            "self-build/manifest.json",
+            'for arch in ("x86_64", "aarch64")',
+            'PREFIX + f"link/{arch}.rsp"',
+            "kit_tree_sha256",
+            "allowZip64=False",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, source)
+
     def test_package_time_execution_uses_explicit_ape_loader(self):
         script = PACKAGE_SCRIPT.read_text()
 
         self.assertIn('APE_LOADER="$COSMOCC_ROOT/bin/ape-x86_64.elf"', script)
         self.assertEqual(
             script.count('COSMO_APE_LOADER="$APE_LOADER" "$APE_LOADER"'),
-            3,
+            4,
         )
 
     def test_packaging_workflow_preserves_universal_ape_during_smoke_tests(self):

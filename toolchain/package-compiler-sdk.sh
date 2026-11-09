@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 # Stage-1 compiler payload experiment. This is NOT an in-process compiler.
 set -euo pipefail
+PACKAGE_COMPILE_ONLY=false
+for argument in "$@"; do
+  case "$argument" in
+    --compile-only) PACKAGE_COMPILE_ONLY=true ;;
+    *) echo 'Usage: toolchain/package-compiler-sdk.sh [--compile-only]' >&2; exit 2 ;;
+  esac
+done
+SELF_BUILD_ARGS=()
+if [[ "$PACKAGE_COMPILE_ONLY" == true ]]; then
+  SELF_BUILD_ARGS=(--compile-only)
+fi
 cd "$(dirname "$0")/.."
 : "${COSMOCC_ROOT:?Set COSMOCC_ROOT to extracted cosmocc SDK root}"
 : "${COSMOCC:?Set COSMOCC to compiler binary}"
@@ -26,7 +37,7 @@ elif [[ -n "${MACHIN:-}" && -n "${MACHIN_SRC:-}" ]]; then
 fi
 # Compile every object that links against repository-built archives with the
 # same repository compiler, flags, headers, and ABI for each architecture.
-object_names=(ape_toolchain embedded-sdk-driver native_zip machin_build project_manifest rust_build tempdir)
+object_names=(ape_toolchain embedded-sdk-driver native_zip machin_build project_manifest rust_build self_build tempdir)
 x86_objects=()
 arm_objects=()
 arm_companion_objects=()
@@ -64,8 +75,20 @@ TOOLCHAIN_DEPS="$LUA_DEPS"
 export TOOLCHAIN_OBJECTS TOOLCHAIN_ARM_OBJECTS TOOLCHAIN_DEPS COSMOCC COSMO_MAKE
 sh toolchain/link-unified-ape.sh o/toolchain/toolchain.com
 mkdir -p o/toolchain/compiler-payload
-python3 - "$COSMOCC_ROOT" "${RUST_APE_SOURCE:-}" "${RUST_COMPILER_ROOT:-}" "${RUST_APE_SDK_ROOT:-}" "${NODEJS_ROOT:-}" "${WEBGPU_SDK_ROOT:-}" "$PWD/toolchain" "${MACHIN_SRC:-}" "${MACHIN:-}" <<'PY'
-import json,os,sys,zipfile,stat
+SELF_BUILD_ZIP=o/toolchain/compiler-payload/self-build.zip
+SELF_BUILD_MACHIN_ARGS=()
+if [[ "$BUILD_MACHIN_OBJECT" == true ]]; then
+  SELF_BUILD_MACHIN_ARGS=(--machin-source "$PWD/o/toolchain/compiler.c")
+elif [[ -n "$MACHIN_OBJECT" ]]; then
+  SELF_BUILD_MACHIN_ARGS=(--machin-object "$MACHIN_OBJECT" --machin-arm-object "$MACHIN_ARM_OBJECT")
+fi
+python3 toolchain/package_self_build.py \
+  --repo . \
+  --cosmocc-root "$COSMOCC_ROOT" \
+  --output "$SELF_BUILD_ZIP" \
+  --make "$COSMO_MAKE" "${SELF_BUILD_MACHIN_ARGS[@]}"
+python3 - "$COSMOCC_ROOT" "${RUST_APE_SOURCE:-}" "${RUST_COMPILER_ROOT:-}" "${RUST_APE_SDK_ROOT:-}" "${NODEJS_ROOT:-}" "${WEBGPU_SDK_ROOT:-}" "$PWD/toolchain" "${MACHIN_SRC:-}" "${MACHIN:-}" "$SELF_BUILD_ZIP" <<'PY'
+import copy,json,os,sys,zipfile,stat
 from pathlib import Path
 sys.path.insert(0,sys.argv[7])
 from rust_sdk_resources import portable_rust_resources
@@ -76,6 +99,7 @@ rust_compiler=os.path.realpath(sys.argv[3]) if sys.argv[3] else None
 rust_ape_sdk=os.path.realpath(sys.argv[4]) if sys.argv[4] else None
 nodejs=os.path.realpath(sys.argv[5]) if sys.argv[5] else None
 webgpu=os.path.realpath(sys.argv[6]) if sys.argv[6] else None
+self_build_zip=os.path.realpath(sys.argv[10]) if len(sys.argv)>10 and sys.argv[10] else None
 if rust_ape_sdk and not os.path.isfile(os.path.join(rust_ape_sdk,'generated','x86_64-unknown-linux-musl.json')):
     raise SystemExit('RUST_APE_SDK_ROOT must contain generated/x86_64-unknown-linux-musl.json')
 if rust_compiler and not os.path.isfile(os.path.join(rust_compiler,'hosts.json')):
@@ -118,6 +142,15 @@ with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6,al
             z.writestr(info,os.readlink(path))
         else:
             z.write(path,arc)
+    if self_build_zip:
+        count=0
+        with zipfile.ZipFile(self_build_zip) as source:
+            if source.testzip() is not None:
+                raise SystemExit('Self-build archive failed its CRC check')
+            for entry in source.infolist():
+                z.writestr(copy.copy(entry),source.read(entry))
+                count+=1
+        print('Recursive self-build entries packaged:',count)
     if rust_source:
         rust_count=0
         for directory, dirs, names in os.walk(rust_source):
@@ -225,16 +258,26 @@ with zipfile.ZipFile(out) as z:
     if webgpu:
         assert 'webgpu/manifest.json' in names
         assert 'webgpu/lib/wgpu/libwgpu_native.a' in names
+    if self_build_zip:
+        assert 'self-build/manifest.json' in names
+        assert 'self-build/link/x86_64.rsp' in names
+        assert 'self-build/link/aarch64.rsp' in names
 print('payload:',out,'files:',len(files),'bytes:',os.path.getsize(out))
 PY
 # Preserve existing executable resources and use native absolute ZIP offsets.
 python3 toolchain/attach_sdk.py \
   --executable o/toolchain/toolchain.com \
   --sdk o/toolchain/compiler-payload/cosmocc-sdk.zip \
-  --output o/toolchain/compiler-payload/toolchain-with-sdk.com \
+  --output o/toolchain/compiler-payload/toolchain-bootstrap.com \
   --zipcopy "$COSMOCC_ROOT/bin/zipcopy"
 APE_LOADER="$COSMOCC_ROOT/bin/ape-x86_64.elf"
 test -x "$APE_LOADER" || { echo "Cosmopolitan x86-64 APE loader missing from SDK" >&2; exit 1; }
+SELF_BUILD_CANDIDATE=o/toolchain/compiler-payload/toolchain-with-sdk.next.com
+rm -f "$SELF_BUILD_CANDIDATE" "$SELF_BUILD_CANDIDATE.provenance.json"
+COSMO_APE_LOADER="$APE_LOADER" "$APE_LOADER" o/toolchain/compiler-payload/toolchain-bootstrap.com self-build "$SELF_BUILD_CANDIDATE" "${SELF_BUILD_ARGS[@]}"
+mv -f "$SELF_BUILD_CANDIDATE" o/toolchain/compiler-payload/toolchain-with-sdk.com
+mv -f "$SELF_BUILD_CANDIDATE.provenance.json" o/toolchain/compiler-payload/toolchain-with-sdk.com.provenance.json
+if [[ "$PACKAGE_COMPILE_ONLY" != true ]]; then
 COSMO_APE_LOADER="$APE_LOADER" "$APE_LOADER" o/toolchain/compiler-payload/toolchain-with-sdk.com selftest
 test "$(COSMO_APE_LOADER="$APE_LOADER" "$APE_LOADER" o/toolchain/compiler-payload/toolchain-with-sdk.com lua -e 'print(6 * 7)')" = 42
 if [[ -n "$MACHIN_OBJECT" ]]; then
@@ -243,5 +286,9 @@ if [[ -n "$MACHIN_OBJECT" ]]; then
   grep -q 'main' o/toolchain/combined-machin-demo.c
   echo 'PASS: self-hosted Machin and compiler SDK share one APE'
 fi
+fi
 python3 toolchain/provenance.py o/toolchain/compiler-payload/toolchain-with-sdk.com
+if [[ "$PACKAGE_COMPILE_ONLY" == true ]]; then
+  echo 'Compile-only package complete; dispatcher, Lua and Machin validation not run.'
+fi
 echo 'NOTE: SDK commands extract temporary files and run compiler subprocesses; compiler portability is not implied.'

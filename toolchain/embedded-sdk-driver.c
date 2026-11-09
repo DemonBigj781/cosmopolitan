@@ -152,6 +152,9 @@ done:
   free(args);
   return rc;
 }
+int embedded_sdk_run(char *const argv[]) {
+  return run(argv);
+}
 int embedded_sdk_run_script(char *const argv[]) {
   int count=0,rc;
   while(argv[count])count++;
