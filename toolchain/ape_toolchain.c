@@ -3,6 +3,7 @@
 
 extern int machin_build_main(int argc, char **argv) __attribute__((weak));
 extern int rust_build_main(int argc, char **argv) __attribute__((weak));
+extern int self_build_main(int argc, char **argv) __attribute__((weak));
 extern int embedded_sdk_main(int argc, char **argv) __attribute__((weak));
 extern int embedded_sdk_cleanup(void) __attribute__((weak));
 extern int machin_entry(int argc, char **argv) __attribute__((weak));
@@ -39,6 +40,10 @@ static int dispatch(int argc, char **argv) {
   if (!strcmp(argv[1], "machin")) {
     if (!machin_build_main) { fputs("Machin build driver not linked\\n", stderr); return 2; }
     return machin_build_main(argc, argv);
+  }
+  if (!strcmp(argv[1], "self-build")) {
+    if (!self_build_main) { fputs("Self-build driver not linked\n", stderr); return 2; }
+    return self_build_main(argc, argv);
   }
   if (!strcmp(argv[1], "version")) {
     puts("ape-toolchain bootstrap 0.1");

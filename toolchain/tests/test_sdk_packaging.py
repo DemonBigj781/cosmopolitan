@@ -54,6 +54,7 @@ class SdkPackagingTest(unittest.TestCase):
         self.nodejs = self.workdir / "nodejs"
         self.webgpu = self.workdir / "webgpu"
         self.sdk = self.workdir / "sdk"
+        self.self_build = self.workdir / "self-build.zip"
         self.archive = self.workdir / "o/toolchain/compiler-payload/cosmocc-sdk.zip"
         self.archive.parent.mkdir(parents=True)
         self.write(self.cosmocc, "bin/cosmocc", "compiler", executable=True)
@@ -105,6 +106,10 @@ class SdkPackagingTest(unittest.TestCase):
         self.write(self.sdk, "LICENSE", "license")
         for directory in (".git", "__pycache__", "target", "build", "o", "cache"):
             self.write(self.sdk, directory + "/unneeded", "not a runtime resource")
+        with zipfile.ZipFile(self.self_build, "w") as archive:
+            archive.writestr("self-build/manifest.json", "{}\n")
+            archive.writestr("self-build/link/x86_64.rsp", "x86\n")
+            archive.writestr("self-build/link/aarch64.rsp", "arm\n")
 
     def write(self, root, name, content, executable=False):
         path = root / name
@@ -115,7 +120,7 @@ class SdkPackagingTest(unittest.TestCase):
         return path
 
     def run_packager(self, with_rust=True, machin=None, with_node=True,
-                     with_webgpu=True):
+                      with_webgpu=True, with_self_build=False):
         args = [str(self.cosmocc)]
         args += ([str(self.source), str(self.compiler), str(self.sdk)]
                  if with_rust else ["", "", ""])
@@ -123,6 +128,8 @@ class SdkPackagingTest(unittest.TestCase):
         args.append(str(self.webgpu) if with_webgpu else "")
         args.append(str(ROOT / "toolchain"))
         args.extend([str(machin) if machin else "", str(machin / "compiler") if machin else ""])
+        if with_self_build:
+            args.append(str(self.self_build))
         return subprocess.run(
             [sys.executable, "-c", self.packager, *args],
             cwd=self.workdir, text=True, capture_output=True,
@@ -139,6 +146,15 @@ class SdkPackagingTest(unittest.TestCase):
         with self.package() as archive:
             names = archive.namelist()
             self.assertEqual(len(names), len(set(names)), "SDK entries packaged twice")
+
+    def test_recursive_self_build_archive_is_merged(self):
+        result = self.run_packager(with_self_build=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        with zipfile.ZipFile(self.archive) as archive:
+            self.assertIn("Recursive self-build entries packaged: 3", result.stdout)
+            self.assertEqual(archive.read("self-build/manifest.json"), b"{}\n")
+            self.assertEqual(archive.read("self-build/link/x86_64.rsp"), b"x86\n")
+            self.assertEqual(archive.read("self-build/link/aarch64.rsp"), b"arm\n")
 
     def test_excludes_only_disposable_sdk_contents(self):
         with self.package() as archive:

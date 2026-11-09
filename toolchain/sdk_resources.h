@@ -16,6 +16,7 @@ int embedded_sdk_main(int argc, char **argv);
 int embedded_sdk_cleanup(void);
 int embedded_sdk_materialize(const char *self, enum SdkComponent component);
 const char *embedded_sdk_root(void);
+int embedded_sdk_run(char *const argv[]);
 int embedded_sdk_run_script(char *const argv[]);
 
 #endif
