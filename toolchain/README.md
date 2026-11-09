@@ -517,6 +517,59 @@ Launcher, compiler, Cargo, and generated-program records remain distinct. Native
 archive attachment still has a 2 GiB limit and fails before publication if exceeded;
 the shared library layout avoids duplicating the same target payload per host.
 
+## Manifest library linking
+
+The project-manifest entry point uses one final C/C++ link pipeline for C,
+C++, Rust and Machin. Rust and Machin still accept exactly one root source;
+Rust modules may be included by that root, and the Rust entry contract remains
+`#![no_std]` with an exported `extern "C" fn rust_main() -> i32`. This is not
+arbitrary Cargo-project or Rust standard-library integration.
+
+Example (paths are relative to the manifest):
+
+```json
+{
+  "manifest": {
+    "language": "rust",
+    "target": "ape",
+    "sources": "src/main.rs",
+    "output": "build/program.com",
+    "libraries": {
+      "file": ["lib/support.a"],
+      "folder": ["vendor/math"]
+    }
+  }
+}
+```
+
+- `file` adds a static library or object to the common final link.
+- `folder` supplies a bundle's `include/` and `link.args` (one linker argument
+  per line, relative file paths resolved against the bundle).
+- `self: "webgpu"` selects the packaged WebGPU runtime and static archive set.
+  It requires `target: "x86_64"` for every language; no ARM WebGPU support is
+  implied. All languages receive the same native call bridges and Windows
+  stack-reserve adjustment.
+- `target: "ape"` retains the existing x86-64/ARM64 object convention. Local
+  archives/objects must provide matching `.aarch64/` companions for Cosmocc.
+  `target: "x86_64"` emits and links only the x86-64 objects.
+
+Rust objects and Machin-generated C are created in a private owned temporary
+directory. Compiler failures preserve the previous output. Normal completion
+and failure remove generated intermediates and Cosmocc's debug/ARM sidecars.
+
+Git, FTP, HTTP and HTTPS library acquisition are still rejected explicitly.
+They require an embedded transport, pinned inputs, safe archive extraction and
+an offline policy; this change does not substitute host `git`/`curl` commands or
+claim those protocols are implemented.
+
+**Implementation status:** the shared language/library path has been added and
+GCC object compilation against the repository headers (with warnings as errors)
+and Python syntax checks passed. This is not a complete Cosmocc/APE link. The
+new contract regressions are written but have
+not been executed. Full compiler linking, runtime portability, CPU numerical
+behavior and GPU behavior remain unverified for this revision. Behavioral
+validation is deferred until the requested implementation phase is complete.
+
 ## Next stages
 
 The canonical priorities, completed baseline checks, and remaining work are in

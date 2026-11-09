@@ -9,12 +9,34 @@
 #include <limits.h>
 #include "sdk_resources.h"
 #include "tempdir.h"
+#include "language_build.h"
 
 static int invoke(char **args) {
   int argc=0;
   while(args[argc])argc++;
   return embedded_sdk_main(argc,args);
 }
+/* Keep both the legacy CLI and manifest builds on the same object recipe. */
+int rust_compile_objects(const char *self,const char *source,
+                         const char *directory,int multiarch) {
+  char x[4096],a[4096],subdir[4096];
+  if(snprintf(x,sizeof(x),"%s/rust.o",directory)>=(int)sizeof(x) ||
+     snprintf(subdir,sizeof(subdir),"%s/.aarch64",directory)>=(int)sizeof(subdir) ||
+     snprintf(a,sizeof(a),"%s/rust.o",subdir)>=(int)sizeof(a))return 1;
+  if(multiarch && mkdir(subdir,0700)) {perror("mkdir Rust ARM objects");return 1;}
+  char *xargs[]={(char*)self,"rust","rustc","--edition=2024","--target",
+    "x86_64-unknown-linux-gnu","--crate-type=lib","--emit=obj",
+    "-C","panic=abort","-C","overflow-checks=off",(char*)source,"-o",x,NULL};
+  int rc=invoke(xargs);
+  if(!rc && multiarch) {
+    char *aargs[]={(char*)self,"rust","rustc","--edition=2024","--target",
+      "aarch64-unknown-linux-gnu","--crate-type=lib","--emit=obj",
+      "-C","panic=abort","-C","overflow-checks=off",(char*)source,"-o",a,NULL};
+    rc=invoke(aargs);
+  }
+  return rc;
+}
+
 int rust_build_main(int argc,char **argv) {
   if(argc<4 || strcmp(argv[2],"build")) {
     fputs("Usage: toolchain.com rust build input.rs [-o output.com]\n",stderr);
@@ -31,22 +53,11 @@ int rust_build_main(int argc,char **argv) {
   if(toolchain_temp_open(&workspace,"rust-ape-build")) {perror("create Rust workspace");return 1;}
   const char *dir=workspace.path;
   int rc=1;
-  char x[4096],a[4096],subdir[4096],wrapper[4096],cobj[4096];
+  char x[4096],wrapper[4096],cobj[4096];
   if(snprintf(x,sizeof(x),"%s/rust.o",dir)>=(int)sizeof(x) ||
-     snprintf(subdir,sizeof(subdir),"%s/.aarch64",dir)>=(int)sizeof(subdir) ||
-     snprintf(a,sizeof(a),"%s/rust.o",subdir)>=(int)sizeof(a) ||
      snprintf(wrapper,sizeof(wrapper),"%s/main.c",dir)>=(int)sizeof(wrapper) ||
      snprintf(cobj,sizeof(cobj),"%s/main.o",dir)>=(int)sizeof(cobj))goto done;
-  if(mkdir(subdir,0700)) {perror("mkdir");goto done;}
-  char *xargs[]={self,"rust","rustc","--edition=2024","--target","x86_64-unknown-linux-gnu","--crate-type=lib","--emit=obj",
-    "-C","panic=abort","-C","overflow-checks=off",(char*)source,"-o",x,NULL};
-  rc=invoke(xargs);
-  if(!rc) {
-    char *aargs[]={self,"rust","rustc","--edition=2024","--target","aarch64-unknown-linux-gnu",
-      "--crate-type=lib","--emit=obj","-C","panic=abort","-C","overflow-checks=off",
-      (char*)source,"-o",a,NULL};
-    rc=invoke(aargs);
-  }
+  rc=rust_compile_objects(self,source,dir,1);
   if(!rc) {
     FILE *f=fopen(wrapper,"wb");
     if(!f) {perror("wrapper");rc=1;}

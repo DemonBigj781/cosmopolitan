@@ -8,6 +8,7 @@
 #include <limits.h>
 #include <errno.h>
 #include "tempdir.h"
+#include "language_build.h"
 
 static int child(char *const args[], const char *stdout_path) {
   pid_t pid=fork();
@@ -40,6 +41,11 @@ static int child(char *const args[], const char *stdout_path) {
   if(WIFEXITED(status))return WEXITSTATUS(status);
   return WIFSIGNALED(status)?128+WTERMSIG(status):125;
 }
+int machin_compile_source(const char *self,const char *source,const char *output) {
+  char *generate[]={(char*)self,"machin-compiler","--full",(char*)source,NULL};
+  return child(generate,output);
+}
+
 int machin_build_main(int argc,char **argv){
   if(argc<4 || strcmp(argv[2],"build")){
     fputs("Usage: toolchain.com machin build input.mfl [-o output.com]\\n",stderr);
@@ -57,8 +63,7 @@ int machin_build_main(int argc,char **argv){
   int rc=1;
   char temp[4096];
   if(snprintf(temp,sizeof(temp),"%s/generated.c",workspace.path)>=(int)sizeof(temp))goto done;
-  char *generate[]={self,"machin-compiler","--full",(char*)source,NULL};
-  rc=child(generate,temp);
+  rc=machin_compile_source(self,source,temp);
   if(!rc){
     char *compile[]={self,"cc","-O2","-std=c11","-pthread",
                      temp,"-o",(char*)output,NULL};

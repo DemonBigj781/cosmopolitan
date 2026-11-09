@@ -15,12 +15,14 @@
 #include "third_party/lua/lua.h"
 #include "tool/net/ljson.h"
 #include "sdk_resources.h"
+#include "tempdir.h"
+#include "language_build.h"
 
 #define MANIFEST_LIMIT (1024 * 1024)
 #define ARGUMENT_LIMIT 2048
 
-extern int machin_build_main(int, char **) __attribute__((weak));
-extern int rust_build_main(int, char **) __attribute__((weak));
+extern int machin_compile_source(const char *,const char *,const char *) __attribute__((weak));
+extern int rust_compile_objects(const char *,const char *,const char *,int) __attribute__((weak));
 
 struct Strings {
   char **items;
@@ -397,38 +399,6 @@ static int publish_output(const char *temporary,const char *output) {
   return 0;
 }
 
-static int build_existing_language(const char *self,const char *directory,
-                                   const struct Project *project,const char *output) {
-  if(project->sources.count!=1) {
-    fprintf(stderr,"manifest language %s currently requires exactly one source\n",project->language);return 2;
-  }
-  if(project->libraries.self.count || project->libraries.file.count ||
-     project->libraries.folder.count || remote_libraries(&project->libraries)) {
-    fprintf(stderr,"manifest libraries are not supported by the %s student linker yet\n",project->language);return 2;
-  }
-  if(strcmp(project->target,"ape")) {
-    fprintf(stderr,"manifest target for %s must be 'ape'\n",project->language);return 2;
-  }
-  char *source=existing_path(directory,project->sources.items[0],0);
-  if(!source) {perror(project->sources.items[0]);return 1;}
-  char temporary[4096];
-  if(snprintf(temporary,sizeof(temporary),"%s.cosmo-tmp-%ld",output,(long)getpid())>=(int)sizeof(temporary)) {free(source);return 1;}
-  unlink(temporary);
-  char *args[7]={ (char*)self, project->language, "build", source, "-o", temporary, NULL };
-  int rc;
-  if(!strcmp(project->language,"rust")) {
-    if(!rust_build_main) {fputs("Rust build driver not linked\n",stderr);free(source);return 2;}
-    rc=rust_build_main(6,args);
-  } else {
-    if(!machin_build_main) {fputs("Machin build driver not linked\n",stderr);free(source);return 2;}
-    rc=machin_build_main(6,args);
-  }
-  free(source);
-  if(!rc && publish_output(temporary,output)) {perror("publish student APE");rc=1;}
-  if(rc)unlink(temporary);
-  return rc;
-}
-
 static int build_c_project(const char *self,const char *directory,
                            const struct Project *project,const char *output) {
   int webgpu=wants_webgpu(project);if(webgpu<0)return 2;
@@ -500,10 +470,13 @@ static int build_c_project(const char *self,const char *directory,
   }
   if(strings_push(&args,"-Wl,--gc-sections") || strings_push(&args,"-pthread") ||
      strings_push(&args,"-lm") || strings_push(&args,"-ldl"))goto done;
-  char temporary[4096],debug[4096];
-  if(snprintf(temporary,sizeof(temporary),"%s.cosmo-tmp-%ld",output,(long)getpid())>=(int)sizeof(temporary) ||
-     snprintf(debug,sizeof(debug),"%s.dbg",temporary)>=(int)sizeof(debug))goto done;
-  unlink(temporary);unlink(debug);
+  char temporary[4096],debug[4096],arm_debug[4096];
+  /* cosmocc derives .com.dbg and .aarch64.elf from an output ending in .com.
+   * Use that suffix so all compiler sidecars have known, owned cleanup paths. */
+  if(snprintf(temporary,sizeof(temporary),"%s.cosmo-tmp-%ld.com",output,(long)getpid())>=(int)sizeof(temporary) ||
+     snprintf(debug,sizeof(debug),"%s.dbg",temporary)>=(int)sizeof(debug) ||
+     snprintf(arm_debug,sizeof(arm_debug),"%s.cosmo-tmp-%ld.aarch64.elf",output,(long)getpid())>=(int)sizeof(arm_debug))goto done;
+  unlink(temporary);unlink(debug);unlink(arm_debug);
   if(strings_push(&args,"-o") || strings_push(&args,!strcmp(project->target,"x86_64")?debug:temporary) ||
      strings_push_owned(&args,NULL))goto done;
   rc=x86_only?embedded_sdk_run_script(args.items):embedded_sdk_main((int)args.count-1,args.items);
@@ -519,9 +492,63 @@ static int build_c_project(const char *self,const char *directory,
   if(!rc && chmod(temporary,0755)) {perror("mark student APE executable");rc=1;}
   if(!rc && publish_output(temporary,output)) {perror("publish student APE");rc=1;}
 cleanup:
-  unlink(debug);if(rc)unlink(temporary);
+  unlink(debug);unlink(arm_debug);if(rc)unlink(temporary);
 done:
   strings_free(&args);return rc;
+}
+
+/* Language frontends emit into an owned workspace. All manifest languages then
+ * use the same library resolution, WebGPU runtime, target and publish rules. */
+static int build_existing_language(const char *self,const char *directory,
+                                   const struct Project *project,const char *output) {
+  int webgpu=wants_webgpu(project);
+  if(webgpu<0 || remote_libraries(&project->libraries))return 2;
+  if(strcmp(project->target,"ape") && strcmp(project->target,"x86_64")) {
+    fputs("manifest.target must be 'ape' or 'x86_64'\n",stderr);return 2;
+  }
+  if(webgpu && strcmp(project->target,"x86_64")) {
+    fputs("embedded library webgpu currently requires manifest.target 'x86_64'\n",stderr);return 2;
+  }
+  if(project->sources.count!=1) {
+    fprintf(stderr,"manifest language %s requires exactly one root source\n",project->language);return 2;
+  }
+  int rust=!strcmp(project->language,"rust");
+  if((rust && !rust_compile_objects) || (!rust && !machin_compile_source)) {
+    fprintf(stderr,"%s source compiler not linked\n",project->language);return 2;
+  }
+  char resolved_self[4096];
+  if(!realpath(self,resolved_self)) {perror("resolve toolchain APE");return 1;}
+  char *source=existing_path(directory,project->sources.items[0],0);
+  if(!source) {perror(project->sources.items[0]);return 1;}
+  struct ToolchainTemp workspace=TOOLCHAIN_TEMP_INIT;
+  struct Project generated=*project;
+  generated.language="c";
+  memset(&generated.sources,0,sizeof(generated.sources));
+  int rc=1;
+  if(toolchain_temp_open(&workspace,"manifest-language")) {perror("create language workspace");goto done;}
+  char input[4096];
+  if(snprintf(input,sizeof(input),"%s/main.c",workspace.path)>=(int)sizeof(input))goto done;
+  if(rust) {
+    rc=rust_compile_objects(resolved_self,source,workspace.path,!strcmp(project->target,"ape"));
+    if(rc)goto done;
+    FILE *file=fopen(input,"wb");
+    if(!file) {perror("create Rust entry wrapper");rc=1;goto done;}
+    int failed=fputs("extern int rust_main(void);\nint main(void){return rust_main();}\n",file)==EOF;
+    if(fclose(file))failed=1;
+    if(failed) {perror("write Rust entry wrapper");rc=1;goto done;}
+    if(strings_push(&generated.sources,input) ||
+       strings_pushf(&generated.sources,"%s/rust.o",workspace.path)) {rc=1;goto done;}
+  } else {
+    rc=machin_compile_source(resolved_self,source,input);
+    if(rc)goto done;
+    if(strings_push(&generated.sources,input)) {rc=1;goto done;}
+  }
+  rc=build_c_project(resolved_self,directory,&generated,output);
+done:
+  strings_free(&generated.sources);
+  free(source);
+  if(toolchain_temp_close(&workspace)) {perror("remove language workspace");if(!rc)rc=1;}
+  return rc;
 }
 
 int project_manifest_main(int argc,char **argv) {
