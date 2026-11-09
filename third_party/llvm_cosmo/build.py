@@ -20,6 +20,9 @@ import urllib.request
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
+sys.path.insert(0, str(REPO / "toolchain"))
+from runtime_identity import selected_runtime
+from static_archives import archive_hashes, verify_archives
 PIN = json.loads((HERE / "IMPORT.json").read_text())
 
 
@@ -145,7 +148,8 @@ def main() -> None:
         return
     sdk = Path(os.environ.get("COSMOCC", REPO / "o/rust-ape/sdk/vendor/cosmocc")).absolute()
     if not (sdk / "bin/x86_64-unknown-cosmo-c++").is_file():
-        raise RuntimeError("Cosmocc4.0.2 SDK missing; run bash third_party/rust_ape/run.sh setup")
+        raise RuntimeError("Selected Cosmopolitan SDK missing; run bash third_party/rust_ape/run.sh setup")
+    runtime = selected_runtime(sdk)
     jobs = int(os.environ.get("LLVM_COSMO_JOBS", "2"))
     if jobs < 1:
         raise RuntimeError("LLVM_COSMO_JOBS must be positive")
@@ -209,6 +213,7 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
         "libexec/gcc/x86_64-linux-cosmo/14.1.0/cc1",
         "libexec/gcc/x86_64-linux-cosmo/14.1.0/cc1plus",
         "x86_64-linux-cosmo/lib/libcosmo.a", "x86_64-linux-cosmo/lib/libcxx.a"]}
+    sdk_identity["runtime"] = runtime
     sdk_stamp = out / "target-sdk.fingerprint"
     sdk_fingerprint = fingerprint(sdk_identity)
     if sdk_stamp.is_file() and sdk_stamp.read_text().strip() != sdk_fingerprint:
@@ -226,11 +231,11 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
         "LLVMX86CodeGen", "LLVMX86AsmParser", "LLVMX86Disassembler", "LLVMX86TargetMCA",
         "LLVMCoroutines", "LLVMLTO", "LLVMIRReader", "LLVMInterpreter"]
     run([ninja, "-C", str(target), f"-j{jobs}", *targets])
-    package(out, source, sdk, target, args.no_run, cmake, ninja)
+    package(out, source, sdk, target, args.no_run, cmake, ninja, runtime)
 
 
 def package(out: Path, source: Path, sdk: Path, target: Path, no_run: bool,
-            cmake: str, ninja: str) -> None:
+            cmake: str, ninja: str, runtime: dict) -> None:
     loader = sdk / "bin/ape-x86_64.elf"
     llvm_config = target / "bin/llvm-config"
     query = [str(loader), str(llvm_config)]
@@ -240,6 +245,7 @@ def package(out: Path, source: Path, sdk: Path, target: Path, no_run: bool,
         path = Path(name)
         if path.suffix != ".a" or not path.is_file() or path.stat().st_size < 8:
             raise RuntimeError(f"Expected completed static LLVM archive: {path}")
+    archive_identity = archive_hashes(archives)
     system = shlex.split(capture([*query, "--link-static", "--system-libs", *components]))
     link_args = ["-Wl,--start-group", *archives, "-Wl,--end-group", "-lcxx", *system]
     wrapper = out / "bin/llvm-config"
@@ -304,8 +310,12 @@ def package(out: Path, source: Path, sdk: Path, target: Path, no_run: bool,
         write_if_changed(destination, "\n\n".join(blocks) + "\n")
     for name in ("LICENSE.MIT", "LICENSE.superconfigure", "IMPORT.json"):
         shutil.copy2(HERE / name, out / "licenses" / name)
+    verify_archives(archives, archive_identity)
+    if selected_runtime(sdk) != runtime:
+        raise RuntimeError("The selected runtime changed during the LLVM build")
     manifest = {"format": 1, "llvm_version": PIN["llvm_version"],
-        "cosmocc_version": PIN["cosmocc_version"], "target_triple": PIN["target_triple"],
+        "runtime": runtime,
+        "cosmocc_version": (PIN["cosmocc_version"] if runtime["kind"] == "stock-sdk" else "source-built"), "target_triple": PIN["target_triple"],
         "sdk_root": str(sdk), "sources": PIN["sources"],
         "patches": {p.name: sha(p) for p in sorted((HERE / "patches").glob("*.patch"))},
         "source_fingerprint": (out / "source.fingerprint").read_text().strip(),
@@ -314,7 +324,7 @@ def package(out: Path, source: Path, sdk: Path, target: Path, no_run: bool,
         "host_tools": {"cmake": cmake, "ninja": ninja},
         "cpp_std": "c++20", "cpp_args": ["-fno-rtti", "-fno-exceptions"],
         "static": True, "rtti": False, "exceptions": False, "threads": True,
-        "components": components, "archives": archives, "link_args": link_args,
+        "components": components, "archives": archives, "archive_sha256": archive_identity, "link_args": link_args,
         "include_dirs": [str(source / "include"), str(target / "include")],
         "llvm_config": str(wrapper), "probe": str(probe), "probe_sha256": before,
         "probe_debug": str(debug_file),

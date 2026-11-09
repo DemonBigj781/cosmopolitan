@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "runtime_abi": "cosmopolitan-source-runtime-v1",
+  "upstream_revision": "0e2d0a89f4c089c7f21377a9c7ce51a6e82c2791",
+  "integration_repository": "https://github.com/DemonBigj781/cosmopolitan",
+  "integration_revision": "3b155638ddd4f69471785d8050dca370b9e077ec",
+  "patch": {
+    "path": "patches/source-runtime-v1.patch",
+    "sha256": "ae2f8fd6ca28389d1a1e12ce4827a319bdc0b27f9c7116aa270ac951a705d21c"
+  },
+  "scope": "Source-runtime shim adaptations only; source-built SDK and regenerated ABI tables are required. Runtime validation remains separate.",
+  "source_abi_inputs": {
+    "libc/nt/struct/sid.h": "2cd6a0996121cb598369c055494fbb95b41103c7387d0346e341d656b1ddd1fd",
+    "libc/dlopen/dladdr.c": "143a862e9c258d07700ab50795251d3dfc0d87eb3ee2043c3a77ea613faba2ab",
+    "libc/intrin/fds.h": "5c77595c4bc00b3e231215be6b0bd4c9e467436b88bf0024e96773c928de166b",
+    "libc/proc/posix_spawn.c": "50cd57487c1c3c4e3ccdb87c8c7b18182f9c6d6ab45ca940452ae5e3e245a3e2"
+  }
+}

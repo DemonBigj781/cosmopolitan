@@ -8,13 +8,15 @@ webgpu_out="$webgpu_repo/o/webgpu"
 webgpu_rust="$webgpu_repo/third_party/rust_ape/run.sh"
 webgpu_sdk="$webgpu_repo/o/rust-ape/sdk"
 webgpu_software=0
+webgpu_compile_only=0
 webgpu_software_args=()
+webgpu_lavapipe_args=()
 
-if (($#)); then
+while (($#)); do
   case "$1" in
     --help|-h)
       cat <<'EOF'
-Usage: bash third_party/wgpu_native/build.sh [--software]
+Usage: bash third_party/wgpu_native/build.sh [--software] [--compile-only]
 
 Build on Linux x86-64. Required host tools: a C compiler, libclang (for
 bindgen), Python 3.12+, curl, git, patch, tar, unzip, sha256sum.
@@ -28,6 +30,12 @@ This mode additionally needs a native C++ compiler, CMake 3.24+, Ninja, and
 Python venv support. The resulting executable runs --software without a host
 Vulkan loader or driver. Its Mesa outputs use the default o/lavapipe directory.
 
+--compile-only skips the native ABI/loader behavior tests and passes --no-run
+to Mesa and LLVM. The application is built, but workloads are not verified.
+COSMO_RUNTIME_PROFILE=source-built requires COSMO_RUNTIME_SDK to name a complete
+source-built SDK. Start with a fresh default o/rust-ape tree for that profile.
+COSMOCC and COSMO, if set, must name o/rust-ape/sdk/vendor/cosmocc after setup.
+
 Run --version to check C/Rust linkage without Vulkan. Run without arguments
 for shader dispatch/readback using a host Vulkan loader and driver. Use
 --software --matmul to test the embedded CPU driver with f32 matrix operations.
@@ -36,13 +44,11 @@ This is an experimental headless compute/raster port, not a window system.
 EOF
       exit 0 ;;
     --software) webgpu_software=1 ;;
+    --compile-only) webgpu_compile_only=1; webgpu_lavapipe_args=(--no-run) ;;
     *) echo 'Unknown argument; see --help.' >&2; exit 2 ;;
   esac
-  if (($# != 1)); then
-    echo 'Too many arguments; see --help.' >&2
-    exit 2
-  fi
-fi
+  shift
+done
 cd -- "$webgpu_repo"
 if [[ -n ${COSMO_RUST_BUILD_ROOT:-} || -n ${COSMO_RUST_ARCH:-} ]]; then
   echo 'This WebGPU target uses the default o/rust-ape SDK and x86-64 architecture.' >&2
@@ -56,28 +62,30 @@ mkdir -p -- "$webgpu_out"
 export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2}
 export WGPU_NATIVE_VERSION=v29.0.1.1
 
-bash "$webgpu_dir/tests/run_abi.sh"
-bash "$webgpu_dir/tests/run_loader.sh"
 bash "$webgpu_rust" setup
-if ((webgpu_software)); then
-  bash "$webgpu_repo/third_party/lavapipe/build.sh"
-  python3 - "$webgpu_repo/o/lavapipe/LINK.json" > "$webgpu_out/software-link-args" <<'PY'
+webgpu_runtime=$(python3 - "$webgpu_repo/toolchain" "$webgpu_sdk/vendor/cosmocc" "${COSMOCC:-}" "${COSMO:-}" <<'PY'
 import json
 from pathlib import Path
 import sys
 
-manifest = json.loads(Path(sys.argv[1]).read_text())
-args = manifest["link_args"]
-if not isinstance(args, list) or not args or any(
-        not isinstance(arg, str) or not arg or "\0" in arg for arg in args):
-    raise SystemExit("Invalid static lavapipe link arguments")
-for arg in args:
-    if arg.endswith((".so", ".dll", ".dylib")) or ".so." in arg:
-        raise SystemExit(f"A software Vulkan link input is a shared library: {arg}")
-    sys.stdout.buffer.write(arg.encode() + b"\0")
+sys.path.insert(0, sys.argv[1])
+from runtime_identity import selected_runtime
+
+sdk = Path(sys.argv[2]).resolve(strict=True)
+for name, override in zip(("COSMOCC", "COSMO"), sys.argv[3:5]):
+    if override and Path(override).resolve(strict=True) != sdk:
+        raise SystemExit(name + " must match the SDK bound to Rust: " + str(sdk))
+print(json.dumps(selected_runtime(sdk), sort_keys=True))
 PY
-  mapfile -d '' -t webgpu_software_args < "$webgpu_out/software-link-args"
-  webgpu_software_args=(-DCOSMO_WGPU_EMBEDDED_LAVAPIPE=1 "${webgpu_software_args[@]}")
+)
+export COSMOCC="$webgpu_sdk/vendor/cosmocc"
+export COSMO="$COSMOCC"
+if ((!webgpu_compile_only)); then
+  bash "$webgpu_dir/tests/run_abi.sh"
+  bash "$webgpu_dir/tests/run_loader.sh"
+fi
+if ((webgpu_software)); then
+  bash "$webgpu_repo/third_party/lavapipe/build.sh" "${webgpu_lavapipe_args[@]}"
 fi
 python3 "$webgpu_dir/prepare.py"
 # Bindgen must read the same C scalar definitions as the Cosmopolitan compiler.
@@ -90,6 +98,49 @@ bash "$webgpu_rust" cargo --config "$webgpu_out/cargo.cosmo.toml" \
 
 webgpu_archive="$webgpu_repo/o/rust-ape/build/x86_64-unknown-linux-musl/release/libwgpu_native.a"
 test -s "$webgpu_archive"
+if [[ ${COSMO_RUNTIME_PROFILE:-stock-sdk} == source-built ]]; then
+  python3 - "$webgpu_repo/toolchain" "$webgpu_archive" <<'PY'
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from static_archives import archive_sha256
+
+archive_sha256(sys.argv[2])
+PY
+fi
+# Validate the actual archive closure immediately before the final link.
+if ((webgpu_software)); then
+  python3 - "$webgpu_repo/o/lavapipe/LINK.json" "$webgpu_runtime" \
+    "$webgpu_repo/toolchain" "$webgpu_out/software-link-manifest.json" > "$webgpu_out/software-link-args" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+sys.path.insert(0, sys.argv[3])
+from static_archives import verify_archives
+
+manifest = json.loads(Path(sys.argv[1]).read_text())
+runtime = json.loads(sys.argv[2])
+if manifest.get("runtime", {"kind": "stock-sdk"}) != runtime:
+    raise SystemExit("Mesa runtime identity does not match the SDK bound to Rust")
+args = manifest["link_args"]
+if not isinstance(args, list) or not args or any(
+        not isinstance(arg, str) or not arg or "\0" in arg or "\n" in arg for arg in args):
+    raise SystemExit("Invalid static lavapipe link arguments")
+archives = [arg for arg in args if not arg.startswith("-")]
+if not archives or any(not Path(arg).is_absolute() or Path(arg).suffix != ".a" for arg in archives):
+    raise SystemExit("Expected absolute static lavapipe archive inputs")
+verify_archives(archives, manifest.get("link_archive_sha256"),
+                required=runtime["kind"] != "stock-sdk")
+Path(sys.argv[4]).write_text(json.dumps(manifest, sort_keys=True) + "\n")
+for arg in args:
+    if arg.endswith((".so", ".dll", ".dylib")) or ".so." in arg:
+        raise SystemExit(f"A software Vulkan link input is a shared library: {arg}")
+    sys.stdout.buffer.write(arg.encode() + b"\0")
+PY
+  mapfile -d '' -t webgpu_software_args < "$webgpu_out/software-link-args"
+  webgpu_software_args=(-DCOSMO_WGPU_EMBEDDED_LAVAPIPE=1 "${webgpu_software_args[@]}")
+fi
 # PTHREAD_MUTEX_INITIALIZER in this Cosmocc release initializes trailing
 # private fields implicitly; -Wextra otherwise warns about the SDK macro.
 "$webgpu_sdk/generated/linker-x86_64.bash" \
@@ -114,7 +165,8 @@ cp -- "$webgpu_sdk/vendor/cosmocc/bin/ape-x86_64.elf" "$webgpu_out/ape-x86_64.el
 chmod +x -- "$webgpu_out/webgpu_compute" "$webgpu_out/ape-x86_64.elf"
 
 python3 "$webgpu_dir/package_notices.py"
-python3 - "$webgpu_out" "$webgpu_dir/Cargo.cosmo.lock" "$webgpu_software" <<'PY'
+python3 - "$webgpu_out" "$webgpu_dir/Cargo.cosmo.lock" "$webgpu_software" \
+  "$webgpu_compile_only" "$webgpu_runtime" "$webgpu_archive" "$webgpu_sdk" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -124,27 +176,63 @@ import shutil
 
 out, lock = map(Path, sys.argv[1:3])
 software = sys.argv[3] == "1"
+compile_only = sys.argv[4] == "1"
+runtime = json.loads(sys.argv[5])
+archive, sdk = map(Path, sys.argv[6:8])
+sys.path.insert(0, str(out.parent.parent / "toolchain"))
+from runtime_identity import selected_runtime
+from static_archives import archive_sha256, verify_archives
+
+if selected_runtime(sdk / "vendor/cosmocc") != runtime:
+    raise SystemExit("The selected runtime changed during the WebGPU build")
+if runtime["kind"] != "stock-sdk":
+    sys.path.insert(0, str(out.parent.parent / "third_party/rust_ape"))
+    from runtime_profile import expected_shim_objects, verify_binding
+    verify_binding(sdk)
+    shims = expected_shim_objects(sdk)
+else:
+    shims = sorted((sdk / "generated").glob("shim-*-x86_64.o"))
 manifest = {
     "target": "x86_64 Cosmopolitan APE",
     "wgpu_native": "v29.0.1.1",
     "wgpu_revision": "6aed50955d934ac36049ba8d002034841633ae02",
     "rust_ape_revision": "0e2d0a89f4c089c7f21377a9c7ce51a6e82c2791",
-    "cosmocc": "4.0.2",
+    "cosmocc": "4.0.2" if runtime["kind"] == "stock-sdk" else "source-built",
+    "runtime": runtime,
     "rust": "nightly-2026-07-28",
     "features": ["wgsl", "vulkan"],
-    "verified_workloads": ["collatz", "f32-matmul", "rgba8-triangle-raster"],
+    "build_status": "built",
+    "compile_only": compile_only,
+    "probes": {
+        "native_abi": "not-run" if compile_only else "passed",
+        "native_loader": "not-run" if compile_only else "passed",
+        "application": "not-run",
+    },
+    "supported_workloads": ["collatz", "f32-matmul", "rgba8-triangle-raster"],
+    "verified_workloads": [],
     "embedded_software_vulkan": software,
     "windows_native_stack_reserve": 8 * 1024 * 1024,
     "windows_native_stack_commit": 4096,
     "lock_sha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
     "application_sha256": hashlib.sha256((out / "webgpu_compute").read_bytes()).hexdigest(),
+    "wgpu_archive_sha256": (archive_sha256(archive) if runtime["kind"] != "stock-sdk"
+                            else hashlib.sha256(archive.read_bytes()).hexdigest()),
+    "rust_shim_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                        for path in shims},
     "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
     "source_dirty": bool(subprocess.check_output(
         ["git", "status", "--porcelain", "--untracked-files=normal"], text=True)),
 }
 if software:
     driver = out.parent / "lavapipe"
-    manifest["software_vulkan"] = json.loads((driver / "LINK.json").read_text())
+    manifest["software_vulkan"] = json.loads((out / "software-link-manifest.json").read_text())
+    if json.loads((driver / "LINK.json").read_text()) != manifest["software_vulkan"]:
+        raise SystemExit("Mesa link metadata changed during the WebGPU link")
+    if manifest["software_vulkan"].get("runtime", {"kind": "stock-sdk"}) != runtime:
+        raise SystemExit("Mesa runtime identity changed during the WebGPU build")
+    verify_archives([arg for arg in manifest["software_vulkan"]["link_args"] if not arg.startswith("-")],
+                    manifest["software_vulkan"].get("link_archive_sha256"),
+                    required=runtime["kind"] != "stock-sdk")
     notices = driver / "licenses"
     if not notices.is_dir() or not any(notices.rglob("*")):
         raise SystemExit("Missing software Vulkan dependency license notices")

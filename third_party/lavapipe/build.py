@@ -20,6 +20,9 @@ import urllib.request
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
+sys.path.insert(0, str(REPO / "toolchain"))
+from runtime_identity import selected_runtime
+from static_archives import archive_hashes as static_archive_hashes, verify_archives
 PIN = json.loads((HERE / "PIN.json").read_text())
 MESA_TARGET = "src/gallium/targets/lavapipe/libvulkan_lvp.a"
 PROBE_PASS = "PASS: direct static lavapipe instance and CPU enumeration"
@@ -219,7 +222,7 @@ def load_llvm(selected: str | None, no_run: bool) -> tuple[Path, dict]:
         raise RuntimeError("LLVM metadata does not match the current pinned sources and port patches; rebuild LLVM")
     for key, expected in (("format", 1), ("llvm_version", PIN["llvm"]["version"]),
                           ("target_triple", "x86_64-unknown-linux-musl"),
-                          ("cosmocc_version", "4.0.2"), ("static", True),
+                          ("static", True),
                           ("rtti", False), ("exceptions", False)):
         if llvm.get(key) != expected:
             raise RuntimeError(f"LLVM metadata {key} must be {expected!r}")
@@ -229,6 +232,10 @@ def load_llvm(selected: str | None, no_run: bool) -> tuple[Path, dict]:
         if not Path(name).is_absolute() or name not in link_args:
             raise RuntimeError(f"LLVM archive missing from static link arguments: {name}")
         static_archive(Path(name))
+    if {value for value in link_args if not value.startswith("-")} != set(archives):
+        raise RuntimeError("LLVM link arguments do not match its archive list")
+    verify_archives(archives, llvm.get("archive_sha256"),
+                    required=llvm.get("runtime", {}).get("kind", "stock-sdk") != "stock-sdk")
     for argument in link_args:
         if re.search(r"\.(?:so(?:\.\d+)*|dylib|dll)(?:$|,)", argument, re.I):
             raise RuntimeError(f"Shared LLVM dependency is not allowed: {argument}")
@@ -256,7 +263,13 @@ def sdk_tools(llvm: dict) -> tuple[Path, dict[str, str], str]:
              "ar": "x86_64-unknown-cosmo-ar", "strip": "x86_64-linux-cosmo-strip",
              "exe_wrapper": "ape-x86_64.elf"}
     tools = {key: str(sdk / "bin" / name) for key, name in names.items()}
-    identity = {}
+    runtime = selected_runtime(sdk)
+    if llvm.get("runtime", {"kind": "stock-sdk"}) != runtime:
+        raise RuntimeError("LLVM metadata belongs to a different runtime; rebuild LLVM")
+    version = "4.0.2" if runtime["kind"] == "stock-sdk" else "source-built"
+    if llvm.get("cosmocc_version") != version:
+        raise RuntimeError("LLVM metadata does not match the selected runtime profile")
+    identity = {"runtime": runtime}
     for name in [*names.values(), "x86_64-linux-cosmo-gcc", "x86_64-linux-cosmo-g++"]:
         identity["bin/" + name] = sha(sdk / "bin" / name)
     for name in ("libexec/gcc/x86_64-linux-cosmo/14.1.0/cc1",
@@ -431,6 +444,9 @@ def package(out: Path, source: Path, source_id: str, mesa: Path,
     static_archive(registration_archive)
     mesa_args = ["-Wl,--whole-archive", str(mesa), "-Wl,--no-whole-archive", *llvm["link_args"]]
     link_args = [str(registration_archive), *mesa_args]
+    verify_archives(llvm["archives"], llvm.get("archive_sha256"),
+                    required=llvm.get("runtime", {}).get("kind", "stock-sdk") != "stock-sdk")
+    link_archive_identity = static_archive_hashes([value for value in link_args if not value.startswith("-")])
     probe_object = compile_object(out, "probe", HERE / "probe.c", common, headers, sdk_id, env)
     probe = out / "lavapipe_probe.exe"
     debug_file = out / "lavapipe_probe.com.dbg"
@@ -478,7 +494,11 @@ def package(out: Path, source: Path, source_id: str, mesa: Path,
     shutil.copytree(HERE / "licenses", licenses / ("mesa-" + PIN["mesa"]["version"]), dirs_exist_ok=True)
     shutil.copytree(llvm["licenses"], licenses / "llvm", dirs_exist_ok=True)
     shutil.copy2(HERE / "PIN.json", licenses / "LAVAPIPE-PIN.json")
+    verify_archives([value for value in link_args if not value.startswith("-")], link_archive_identity)
+    if sdk_tools(llvm)[2] != sdk_id:
+        raise RuntimeError("The selected runtime changed during the Mesa build")
     manifest = {"format": 1, "mesa_version": PIN["mesa"]["version"],
+        "runtime": selected_runtime(sdk),
         "llvm_version": llvm["llvm_version"],
         "provider": "embedded", "name": "Mesa lavapipe " + PIN["mesa"]["version"],
         "target": PIN["target"], "static": True, "external_vulkan_loader": False,
@@ -490,6 +510,7 @@ def package(out: Path, source: Path, source_id: str, mesa: Path,
         "registration_archive": str(registration_archive),
         "registration_archive_sha256": sha(registration_archive),
         "include_dirs": [str(source / "include"), str(HERE)], "link_args": link_args,
+        "link_archive_sha256": link_archive_identity,
         "host_glslang": host, "host_python_tools": python_tools,
         "llvm_metadata": str(llvm_path), "llvm_metadata_sha256": sha(llvm_path), "llvm": llvm,
         "probe": str(probe), "probe_sha256": before, "probe_debug": str(debug_file),

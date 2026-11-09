@@ -28,7 +28,18 @@ APELINK=o/$(mode)/tool/build/apelink
 DEDUPE=o/$(mode)/tool/build/dedupe
 AMD64=${2:-x86_64}
 ARM64=${3:-aarch64}
-NPROC=$(($(_nproc)/2))
+if [ "${COSMO_PACKAGE_JOBS+x}" = x ]; then
+  case "$COSMO_PACKAGE_JOBS" in
+    ''|*[!0-9]*|0) echo 'COSMO_PACKAGE_JOBS must be a positive integer' >&2; exit 1 ;;
+  esac
+  # Reject all-zero strings, without overflowing shell integer arithmetic.
+  case "$COSMO_PACKAGE_JOBS" in
+    *[1-9]*) NPROC=$COSMO_PACKAGE_JOBS ;;
+    *) echo 'COSMO_PACKAGE_JOBS must be a positive integer' >&2; exit 1 ;;
+  esac
+else
+  NPROC=$(($(_nproc)/2))
+fi
 GCCVER=14.1.0
 
 if ! MAKE=$(command -v gmake); then
@@ -284,13 +295,33 @@ OLD=$PWD
 cd "$OUTDIR/"
 if [ ! -x bin/x86_64-linux-cosmo-gcc ]; then
   fetch https://github.com/ahgamut/superconfigure/releases/download/z0.0.60/aarch64-gcc.zip 6a07f915ec0296cd33b3142e75c00ed1a7072c75d92c82a0c0b5f5df2cff0dd2 &
+  fetch_arm64_pid=$!
   fetch https://github.com/ahgamut/superconfigure/releases/download/z0.0.60/x86_64-gcc.zip cbb1659c56a0a4f95a71f59f94693515000d3dd53f79a597acacd53cbad2c7d8 &
+  fetch_amd64_pid=$!
   fetch https://github.com/ahgamut/superconfigure/releases/download/z0.0.60/llvm.zip d42c2e46204d4332975d2d7464c5df63c898c34f8d9d2b83c168c14705ca8edd &
-  wait
+  fetch_llvm_pid=$!
+  fetch_status=0
+  wait "$fetch_arm64_pid" || fetch_status=1
+  wait "$fetch_amd64_pid" || fetch_status=1
+  wait "$fetch_llvm_pid" || fetch_status=1
+  if [ "$fetch_status" -ne 0 ]; then
+    echo 'Compiler archive download or checksum verification failed' >&2
+    exit 1
+  fi
   unzip aarch64-gcc.zip &
+  unzip_arm64_pid=$!
   unzip x86_64-gcc.zip &
+  unzip_amd64_pid=$!
   unzip llvm.zip bin/clang-19 bin/clang-format &
-  wait
+  unzip_llvm_pid=$!
+  unzip_status=0
+  wait "$unzip_arm64_pid" || unzip_status=1
+  wait "$unzip_amd64_pid" || unzip_status=1
+  wait "$unzip_llvm_pid" || unzip_status=1
+  if [ "$unzip_status" -ne 0 ]; then
+    echo 'Compiler archive extraction failed' >&2
+    exit 1
+  fi
   rm -f aarch64-gcc.zip
   rm -f x86_64-gcc.zip
   rm -f llvm.zip

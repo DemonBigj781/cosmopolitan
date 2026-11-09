@@ -101,3 +101,15 @@ Cosmocc's `pecheck` passed and execution printed
 exclusion, a timed condition-variable wait without busy spinning, and a wakeup
 between threads. This establishes a working Rust runtime path on the tested
 Linux host; it does not assert a WebGPU result or a Windows execution result.
+
+## Optional whole-source runtime profile
+
+`COSMO_RUNTIME_PROFILE=source-built` enables the reviewed source-runtime overlay
+without changing the default stock adapters. It requires `COSMO_RUNTIME_SDK`
+from `toolchain/source_runtime.py` and a fresh build root. The full SDK, selected
+ABI inputs, adapter sources and generated tables are bound together. A stock SDK
+with source shims is rejected. See `toolchain/SOURCE_RUNTIME.md` for production,
+identity checks, compile-only integration and remaining validation gates.
+
+This profile has not completed compile or behavioral validation. The historical
+results above refer to the stock profile and do not transfer to source mode.

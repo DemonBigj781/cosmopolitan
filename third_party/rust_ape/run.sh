@@ -9,16 +9,32 @@ mkdir -p -- "$rust_ape_build"
 rust_ape_build=$(cd -- "$rust_ape_build" && pwd)
 rust_ape_sdk="$rust_ape_build/sdk"
 rust_ape_nightly=nightly-2026-07-28
+rust_ape_profile=${COSMO_RUNTIME_PROFILE:-stock-sdk}
+case "$rust_ape_profile" in
+  stock-sdk|source-built) ;;
+  *) echo 'COSMO_RUNTIME_PROFILE must be stock-sdk or source-built.' >&2; exit 2 ;;
+esac
+if [[ "$rust_ape_profile" == source-built ]]; then
+  : "${COSMO_RUNTIME_SDK:?Source-built profile requires COSMO_RUNTIME_SDK from toolchain/source_runtime.py}"
+elif [[ -n ${COSMO_RUNTIME_SDK:-} ]]; then
+  echo 'COSMO_RUNTIME_SDK requires COSMO_RUNTIME_PROFILE=source-built.' >&2
+  exit 2
+fi
 
 usage() {
   cat <<'EOF'
 Usage: third_party/rust_ape/run.sh COMMAND [ARGUMENTS]
 
-  setup                  Install the pinned SDK under o/rust-ape.
+  setup                  Install the selected SDK profile under o/rust-ape.
+  gen-shim               Regenerate ABI constants using the selected runtime.
   build PROJECT [ARGS]   Build an APE with upstream xtask (both CPU targets).
   generate PROJECT      Generate a Rust project using the patched SDK.
   cargo [CARGO ARGS]     Run Cargo for the Cosmopolitan target and patched std.
   paths                  Print SDK paths without installing anything.
+
+COSMO_RUNTIME_PROFILE=source-built requires COSMO_RUNTIME_SDK to identify a
+complete source-built C/C++ SDK. Stock and source profiles require separate build
+roots; runtime identity and ABI tables are checked before compiling Rust.
 
 The build host must be Linux x86-64. COSMO_RUST_BUILD_ROOT changes the build
 directory. COSMO_RUST_ARCH selects x86_64 (default) or aarch64 for `cargo`.
@@ -35,7 +51,7 @@ case "$rust_ape_command" in
     printf 'SDK=%s\nCARGO_HOME=%s\nRUSTUP_HOME=%s\n' "$rust_ape_sdk" \
       "$rust_ape_build/toolchain/cargo" "$rust_ape_build/toolchain/rustup"
     exit 0 ;;
-  setup|build|generate|cargo) ;;
+  setup|build|generate|gen-shim|cargo) ;;
   *) usage >&2; exit 2 ;;
 esac
 
@@ -57,7 +73,24 @@ export RUSTUP_HOME="$rust_ape_build/toolchain/rustup"
 export PATH="$CARGO_HOME/bin:$PATH"
 export RUSTUP_TOOLCHAIN="$rust_ape_nightly"
 mkdir -p -- "$rust_ape_build/toolchain/downloads" "$rust_ape_sdk"
-python3 "$rust_ape_source/stage.py" "$rust_ape_source/upstream" "$rust_ape_sdk"
+python3 "$rust_ape_source/stage.py" "$rust_ape_source/upstream" "$rust_ape_sdk" \
+  --runtime-profile "$rust_ape_profile"
+if [[ "$rust_ape_profile" == source-built ]]; then
+  for argument in "$@"; do
+    if [[ "$rust_ape_command" == setup && "$argument" == --force ]]; then
+      echo 'Source-runtime setup cannot reset a bound SDK; use a new build root.' >&2
+      exit 2
+    fi
+  done
+  if [[ -n ${COSMO:-} && "$COSMO" != "$rust_ape_sdk/vendor/cosmocc" ]]; then
+    echo 'COSMO override conflicts with the selected source-runtime SDK.' >&2
+    exit 2
+  fi
+  if [[ "$rust_ape_command" != setup && "$rust_ape_command" != gen-shim &&
+        -f "$rust_ape_sdk/.cosmo-runtime-tables-ready" ]]; then
+    python3 "$rust_ape_source/runtime_profile.py" verify --sdk "$rust_ape_sdk" >/dev/null
+  fi
+fi
 export COSMO="$rust_ape_sdk/vendor/cosmocc"
 
 if [[ ! -x "$CARGO_HOME/bin/rustup" ]]; then
@@ -80,14 +113,61 @@ if ! rustup run "$rust_ape_nightly" rustc --version >/dev/null 2>&1; then
   rustup toolchain install "$rust_ape_nightly" --profile minimal --component rust-src
 fi
 
-if [[ "$rust_ape_command" == setup ]]; then
+if [[ "$rust_ape_profile" == source-built &&
+      -f "$rust_ape_sdk/.cosmo-runtime-binding.json" ]]; then
+  # Upstream setup owns a stock SDK fetch and may delete vendor/cosmocc when
+  # its download stamp is absent. It must never run over a bound source SDK.
+  if [[ "$rust_ape_command" == setup && $# != 0 ]]; then
+    echo 'Bound source-runtime setup takes no arguments; use a fresh root to reset.' >&2
+    exit 2
+  fi
+  for rust_ape_target in x86_64 aarch64; do
+    for rust_ape_generated in "linker-$rust_ape_target.bash" "ar-$rust_ape_target.bash" \
+                              "$rust_ape_target-unknown-linux-musl.json"; do
+      if [[ ! -f "$rust_ape_sdk/generated/$rust_ape_generated" ]]; then
+        echo 'Bound source-runtime SDK is incomplete; choose a new COSMO_RUST_BUILD_ROOT.' >&2
+        exit 1
+      fi
+    done
+  done
+elif [[ "$rust_ape_command" == setup ]]; then
   (cd -- "$rust_ape_sdk" && cargo run --locked --package xtask -- setup "$@")
-  python3 "$rust_ape_source/prepare.py" "$rust_ape_sdk"
-  exit 0
 elif [[ ! -f "$rust_ape_sdk/generated/x86_64-unknown-linux-musl.json" ]]; then
   (cd -- "$rust_ape_sdk" && cargo run --locked --package xtask -- setup)
 fi
-python3 "$rust_ape_source/prepare.py" "$rust_ape_sdk"
+if [[ "$rust_ape_profile" == source-built ]]; then
+  python3 "$rust_ape_source/runtime_profile.py" activate --sdk "$rust_ape_sdk" \
+    --runtime "$COSMO_RUNTIME_SDK" >/dev/null
+  # This generator preprocesses the selected source headers. It does not execute
+  # the target program; downstream compile-time assertions verify the constants.
+  if [[ "$rust_ape_command" != gen-shim && ( "$rust_ape_command" == setup ||
+        ! -f "$rust_ape_sdk/.cosmo-runtime-tables-ready" ) ]]; then
+    rm -f -- "$rust_ape_sdk/.cosmo-runtime-tables-ready"
+    (cd -- "$rust_ape_sdk" && cargo run --locked --package xtask -- gen-shim)
+    python3 "$rust_ape_source/runtime_profile.py" record-tables --sdk "$rust_ape_sdk"
+    touch "$rust_ape_sdk/.cosmo-runtime-tables-ready"
+  fi
+  if [[ "$rust_ape_command" != gen-shim ]]; then
+    python3 "$rust_ape_source/runtime_profile.py" verify --sdk "$rust_ape_sdk" >/dev/null
+  fi
+else
+  python3 "$rust_ape_source/prepare.py" "$rust_ape_sdk"
+fi
+if [[ "$rust_ape_command" == setup ]]; then
+  exit 0
+fi
+if [[ "$rust_ape_command" == gen-shim ]]; then
+  if [[ "$rust_ape_profile" == source-built && " $* " != *" --dry-run "* ]]; then
+    rm -f -- "$rust_ape_sdk/.cosmo-runtime-tables-ready"
+  fi
+  (cd -- "$rust_ape_sdk" && cargo run --locked --package xtask -- gen-shim "$@")
+  if [[ "$rust_ape_profile" == source-built && " $* " != *" --dry-run "* ]]; then
+    python3 "$rust_ape_source/runtime_profile.py" record-tables --sdk "$rust_ape_sdk"
+    touch "$rust_ape_sdk/.cosmo-runtime-tables-ready"
+    python3 "$rust_ape_source/runtime_profile.py" verify --sdk "$rust_ape_sdk" >/dev/null
+  fi
+  exit 0
+fi
 
 if [[ "$rust_ape_command" != cargo ]]; then
   if (($#)); then
