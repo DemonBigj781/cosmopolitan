@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from file_metadata import STAMP, tree_sha256
-from runtime_identity import (SOURCE_INPUTS, read_json, required_files,
+from runtime_identity import (BINUTILS_ALIASES, SOURCE_INPUTS, read_json, required_files,
                               source_inventory_sha256, verify_runtime_sdk)
 from source_runtime import (COMPILER_ARCHIVES, build_runtime_sdk, git, git_bytes,
                            load_compiler_archives, materialize_source,
@@ -218,6 +218,9 @@ class SourceInventoryTest(unittest.TestCase):
                     path = staged / name
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(b"SDK fixture, not compiled output")
+                for name, target in BINUTILS_ALIASES.items():
+                    (staged / name).unlink()
+                    (staged / name).symlink_to(target)
                 packages.append(checkout)
                 return subprocess.CompletedProcess(command, 0)
             return original_run(command, *args, **kwargs)

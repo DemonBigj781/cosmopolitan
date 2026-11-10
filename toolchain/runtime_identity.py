@@ -10,6 +10,9 @@ import stat
 MANIFEST = "SOURCE_RUNTIME.json"
 SOURCE_INPUTS = "SOURCE_INPUTS.json"
 ARCHITECTURES = ["x86_64", "aarch64"]
+BINUTILS_TOOLS = ("addr2line", "ar", "as", "c++filt", "nm", "objcopy", "objdump", "readelf", "strip")
+BINUTILS_ALIASES = {f"bin/{arch}-unknown-cosmo-{tool}": f"{arch}-linux-cosmo-{tool}"
+                    for arch in ARCHITECTURES for tool in BINUTILS_TOOLS}
 VARIANTS = ("", "dbg", "tiny", "sysv", "optlinux", "tinylinux")
 
 
@@ -71,6 +74,8 @@ def required_files():
              "bin/ape-aarch64.elf", "bin/ape-m1.c"]
     for arch in ARCHITECTURES:
         names += [f"bin/{arch}-linux-cosmo-gcc", f"bin/{arch}-linux-cosmo-g++"]
+        for tool in BINUTILS_TOOLS:
+            names += [f"bin/{arch}-linux-cosmo-{tool}", f"bin/{arch}-unknown-cosmo-{tool}"]
         for variant in VARIANTS:
             prefix = f"{arch}-linux-cosmo/lib/" + (variant + "/" if variant else "")
             leaves = ["crt.o", "crtfastmath.o", "libcosmo.a", "libcxx.a"]
@@ -83,6 +88,10 @@ def require_layout(root):
     for name in required_files():
         if not (Path(root) / name).is_file():
             raise ValueError(f"Incomplete source runtime SDK: {name}")
+    for name, target in BINUTILS_ALIASES.items():
+        path = Path(root) / name
+        if not path.is_symlink() or os.readlink(path) != target:
+            raise ValueError(f"Source runtime requires architecture-specific binutils alias: {name}")
     for path in Path(root).glob("*-linux-cosmo"):
         if path.name not in {a + "-linux-cosmo" for a in ARCHITECTURES}:
             raise ValueError(f"Unsupported runtime architecture: {path.name}")

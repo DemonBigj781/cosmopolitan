@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime_identity import (ARCHITECTURES, MANIFEST, SOURCE_INPUTS, digest_file,
+from runtime_identity import (ARCHITECTURES, BINUTILS_ALIASES, MANIFEST, SOURCE_INPUTS, digest_file,
                               inventory, required_files, runtime_identity,
                               selected_runtime, source_inventory_sha256,
                               verify_runtime_sdk)
@@ -25,6 +25,9 @@ class RuntimeIdentityTest(unittest.TestCase):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"fixture bytes, not a real SDK")
+        for name, target in BINUTILS_ALIASES.items():
+            (self.root / name).unlink()
+            (self.root / name).symlink_to(target)
         (self.root / "bin/cc").symlink_to("cosmocc")
         self.record = {
             "schema_version": 1, "kind": "source-built-cosmopolitan-runtime",
@@ -219,6 +222,32 @@ class RuntimeIdentityTest(unittest.TestCase):
         self.write_manifest()
         with self.assertRaises(ValueError):
             verify_runtime_sdk(self.root)
+
+    def test_missing_binutils_alias_rejected_even_with_rehashed_manifest(self):
+        for name, target in BINUTILS_ALIASES.items():
+            with self.subTest(alias=name):
+                path = self.root / name
+                path.unlink()
+                self.record["files"] = inventory(self.root, exclude=(MANIFEST,))
+                self.write_manifest()
+                with self.assertRaises(ValueError) as error:
+                    verify_runtime_sdk(self.root)
+                self.assertEqual(str(error.exception), "Incomplete source runtime SDK: " + name)
+                path.symlink_to(target)
+
+    def test_binutils_alias_cannot_select_the_other_architecture(self):
+        for name in BINUTILS_ALIASES:
+            with self.subTest(alias=name):
+                path = self.root / name
+                path.unlink()
+                other = "aarch64" if "x86_64" in name else "x86_64"
+                path.symlink_to(other + "-linux-cosmo-" + name.rsplit("-cosmo-", 1)[1])
+                self.record["files"] = inventory(self.root, exclude=(MANIFEST,))
+                self.write_manifest()
+                with self.assertRaisesRegex(ValueError, "architecture-specific binutils alias"):
+                    verify_runtime_sdk(self.root)
+                path.unlink()
+                path.symlink_to(BINUTILS_ALIASES[name])
 
     def test_mode_change(self):
         path = self.root / "bin/cosmocc"
