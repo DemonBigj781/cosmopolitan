@@ -9,16 +9,34 @@ behavioral test has been performed.**
 
 ## Required completed inputs
 
-Use one clean, committed foundation checkout, a whole source SDK produced by
-`source_runtime.py`, its bound Rust SDK, and completed application-patched WGPU,
-LLVM and Mesa outputs. The current WebGPU build layout is `o/webgpu`. An example
-interface for a later authorized export is:
+Use one explicitly materialized, committed foundation source root, a whole
+source SDK produced by `source_runtime.py`, its bound Rust SDK, and completed
+application-patched WGPU, LLVM and Mesa outputs. Before building, create a new
+canonical source checkout with raw committed blob bytes:
+
+```sh
+python3 toolchain/source_runtime.py materialize \
+  --source /work/cosmopolitan-foundation \
+  --output /work/foundation-canonical
+```
+
+Use that same `/work/foundation-canonical` root as the SDK producer's `--source`,
+as the working checkout for all dependency builds, and as the exporter's
+`--source-root`. Materialization is explicit and never silently mutates the
+caller's checkout. An ordinary checkout may apply CRLF conversion or other Git
+filters and therefore is not necessarily byte-identical to committed blobs.
+The exporter does not use `git status` or clean filters to normalize those
+bytes: it checks HEAD, the index and raw tracked bytes, and separately rejects
+nonignored untracked files with `git ls-files --others --exclude-standard -z`.
+
+The current WebGPU build layout is `o/webgpu` within the canonical root. An
+example interface for a later authorized export is:
 
 ```sh
 python3 toolchain/export_foundation.py \
-  --source-root /work/cosmopolitan-foundation \
+  --source-root /work/foundation-canonical \
   --source-sdk /work/source-sdk \
-  --rust-sdk /work/cosmopolitan-foundation/o/rust-ape/sdk \
+  --rust-sdk /work/foundation-canonical/o/rust-ape/sdk \
   --output /exports/foundation-candidate
 ```
 
@@ -86,7 +104,12 @@ ABI correctness, numerical behavior or archive-member survival under LTO/GC.
   all remaining SDK files through `toolchain.support_files`.
 - `PIN.candidate.json`: actual repository/revision and the SHA256 of streamed
   `git archive --format=tar REVISION .` bytes, with `paths: ["."]`, completed
-  producer versions and `cosmocc_version: "source-built"`.
+  producer versions and `cosmocc_version: "source-built"`. Archive generation
+  uses an isolated local bare clone with no checkout or hardlinked objects,
+  minimal repository configuration and the standard `tar.umask=0002`.
+  Committed `.gitattributes` export attributes remain active; caller-local
+  `.git/info/attributes`, external attribute files and configuration overrides
+  cannot change the candidate. The caller's metadata is never rewritten.
 
 Empty SDK `.a` linker-name stubs deliberately supplied by `package.sh` are
 support **data**, never runtime/component archives. Delivered archive inputs
@@ -106,8 +129,11 @@ its own isolated source/output handling. Promotion, default routing, full
 application builds and CPU/GPU qualification remain separate gates.
 
 The exporter has no runtime dependency on an Easy Diffusion checkout. Focused
-fixtures are in `toolchain/tests/test_export_foundation.py`. All 16 passed in
-the implementation workspace, including the separate consumer schema check.
+fixtures are in `toolchain/tests/test_export_foundation.py`. All 19 passed in
+the implementation workspace, including the separate consumer schema check,
+ordinary-CRLF-checkout to canonical-source export-gate regression, and candidate
+archive isolation from inherited Git overrides and uncommitted local archive
+attributes/configuration.
 Optional fixtures use `EASY_DIFFUSION_CONSUMER_DIR` to locate the separate
 consumer's host-only validator and selector. Synthetic exported bytes pass
 both with the generated candidate pin, remain valid after relocation, and fail

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-import ctypes
 import hashlib
 import json
 import os
@@ -25,7 +24,8 @@ import tempfile
 
 from runtime_identity import (MANIFEST, canonical, digest_file, read_json,
                               verify_runtime_sdk, verify_source_inputs)
-from source_runtime import git, tracked_source_inventory
+from source_runtime import (git, git_bytes, git_command, git_environment,
+                            publish_new_directory, tracked_source_inventory)
 from static_archives import archive_sha256, verify_archives
 from webgpu_sdk import archive_destination, stage_webgpu_sdk
 
@@ -246,31 +246,60 @@ def checked_link_option(value):
 
 
 def git_archive_sha256(root, revision):
-    """Stream actual full Git tar bytes, not a synthetic digest of a Git ID."""
-    with tempfile.TemporaryFile() as errors:
-        process = subprocess.Popen(["git", "-C", str(root), "archive", "--format=tar", revision, "."],
-                                   stdout=subprocess.PIPE, stderr=errors)
-        try:
-            checksum = hashlib.sha256()
-            for chunk in iter(lambda: process.stdout.read(1024 * 1024), b""):
-                checksum.update(chunk)
-            code = process.wait()
-        finally:
-            process.stdout.close()
-            if process.poll() is None:
-                process.kill()
-                process.wait()
-        if code:
-            errors.seek(0)
-            raise ValueError("Cannot archive pinned foundation: " + errors.read().decode(errors="replace"))
-    return checksum.hexdigest()
+    """Hash actual Git tar bytes using only committed archive attributes.
+
+    A local bare clone prevents caller-local info/attributes and configuration
+    from changing the pin. No checkout, clean/smudge filters, network fetch or
+    hardlinked object store is used, and the caller's metadata is untouched.
+    """
+    root = Path(root).resolve(strict=True)
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", revision):
+        raise ValueError("Foundation archive requires a full committed revision")
+    with tempfile.TemporaryDirectory(prefix="foundation-archive-") as temporary:
+        isolated = Path(temporary) / "source.git"
+        git_bytes(Path(temporary), "clone", "--quiet", "--bare", "--no-checkout",
+                  "--no-local", "--template=", "--", str(root), str(isolated))
+        object_format = git(isolated, "rev-parse", "--show-object-format")
+        if object_format not in ("sha1", "sha256"):
+            raise ValueError("Unsupported foundation Git object format")
+        # Keep only the format required to read this owned object database.
+        # Clone-created remote settings and any repository-local overrides are
+        # unnecessary for archive generation and cannot become archive inputs.
+        config = "[core]\n\trepositoryformatversion = " + ("1" if object_format == "sha256" else "0")
+        config += "\n\tbare = true\n"
+        if object_format == "sha256":
+            config += "[extensions]\n\tobjectFormat = sha256\n"
+        (isolated / "config").write_text(config)
+        if git(isolated, "rev-parse", "--verify", revision + "^{commit}") != revision:
+            raise ValueError("Foundation archive revision does not identify the selected commit")
+        with tempfile.TemporaryFile() as errors:
+            command = git_command(isolated, "-c", "core.attributesFile=" + os.devnull,
+                                  "-c", "tar.umask=0002", "archive", "--format=tar", revision, ".")
+            process = subprocess.Popen(command, env=git_environment(),
+                                       stdout=subprocess.PIPE, stderr=errors)
+            try:
+                checksum = hashlib.sha256()
+                for chunk in iter(lambda: process.stdout.read(1024 * 1024), b""):
+                    checksum.update(chunk)
+                code = process.wait()
+            finally:
+                process.stdout.close()
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+            if code:
+                errors.seek(0)
+                raise ValueError("Cannot archive pinned foundation: " + errors.read().decode(errors="replace"))
+        return checksum.hexdigest()
 
 
 def verify_source(root, sdk, record):
     source = record["source"]
-    if (git(root, "status", "--porcelain", "--untracked-files=all")
-            or git(root, "remote", "get-url", "origin") != source["repository"]):
-        raise ValueError("Exporter requires a clean committed checkout with the SDK's origin")
+    # Status/diff may normalize attributes or execute clean filters. Source
+    # identity is raw Git blob bytes, checked below against HEAD and the index.
+    untracked = git_bytes(root, "ls-files", "--others", "--exclude-standard", "-z")
+    if untracked or git(root, "remote", "get-url", "origin") != source["repository"]:
+        raise ValueError("Exporter requires committed source, no nonignored untracked files, and the SDK's origin")
     if not re.fullmatch(r"https://[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?", source["repository"]):
         raise ValueError("Foundation origin must be an HTTPS repository URL without credentials")
     inputs = verify_source_inputs(sdk, record)
@@ -631,26 +660,6 @@ def verify_export(stage, handoff, record):
             for name in component[field]:
                 if handoff["artifacts"].get(name, {}).get("kind") != kind:
                     raise ValueError(f"Component artifact kind differs: {name}")
-
-
-def publish_new_directory(source, destination):
-    """Publish atomically without replacing even an empty existing directory.
-
-    Current producers require Linux. Fail closed without renameat2's
-    no-replacement primitive instead of introducing a check/rename race.
-    """
-    if not sys.platform.startswith("linux"):
-        raise ValueError("Atomic no-replacement export currently requires a Linux host")
-    libc = ctypes.CDLL(None, use_errno=True)
-    try:
-        renameat2 = libc.renameat2
-    except AttributeError as error:
-        raise ValueError("Host libc lacks atomic no-replacement renameat2") from error
-    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-    renameat2.restype = ctypes.c_int
-    if renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), 1) != 0:
-        number = ctypes.get_errno()
-        raise OSError(number, os.strerror(number), str(destination))
 
 
 def export_foundation(repository_root, source_sdk, rust_sdk, output, *, wgpu_archive=None,

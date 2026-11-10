@@ -6,12 +6,15 @@ The stock SDK is a compiler input, never the source of the final libc/CRT/header
 Manifests are local content records, not authenticated build attestations.
 """
 import argparse
+import ctypes
 import hashlib
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import json
 
@@ -23,14 +26,165 @@ from runtime_identity import (MANIFEST, SOURCE_INPUTS, ARCHITECTURES, digest_fil
                               source_inventory_sha256, verify_runtime_sdk)
 
 
+def git_environment():
+    # Pin operations to the selected repository, not an inherited worktree,
+    # index, replacement object, external filter or process-global Git config.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
+               GIT_CONFIG_NOSYSTEM="1", GIT_ATTR_NOSYSTEM="1", GIT_NO_REPLACE_OBJECTS="1")
+    return env
+
+
+def git_command(root, *args):
+    return ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null",
+            "-c", "core.fsmonitor=false", *args]
+
+
+def git_bytes(root, *args):
+    return subprocess.run(git_command(root, *args), check=True, env=git_environment(),
+                          stdout=subprocess.PIPE).stdout
+
+
 def git(root, *args):
-    return subprocess.run(["git", "-C", str(root), *args], check=True, text=True,
-                          stdout=subprocess.PIPE).stdout.strip()
+    return os.fsdecode(git_bytes(root, *args)).strip()
 
 
 def require_new(path):
     if path.exists() or path.is_symlink():
         raise ValueError(f"Refusing pre-existing output: {path}")
+
+
+def publish_new_directory(source, destination):
+    """Atomically publish without replacing even a concurrent empty directory."""
+    if not sys.platform.startswith("linux"):
+        raise ValueError("Atomic no-replacement publication currently requires a Linux host")
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        renameat2 = libc.renameat2
+    except AttributeError as error:
+        raise ValueError("Host libc lacks atomic no-replacement renameat2") from error
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    if renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), 1) != 0:
+        number = ctypes.get_errno()
+        raise OSError(number, os.strerror(number), str(destination))
+
+
+def tracked_git_entries(root, *args):
+    raw = git_bytes(root, *args)
+    if not raw or not raw.endswith(b"\0"):
+        raise ValueError("Missing or malformed complete tracked source listing")
+    entries = {}
+    for item in raw[:-1].split(b"\0"):
+        header, raw_name = item.split(b"\t", 1)
+        first, second, third = header.decode("ascii").split(" ")
+        name = os.fsdecode(raw_name)
+        require_source_path(name)
+        if name in entries:
+            raise ValueError(f"Duplicate/unmerged tracked source: {name}")
+        if first == "160000":
+            raise ValueError("Submodules require explicit source identity support")
+        if args[0] == "ls-files":
+            if third != "0":
+                raise ValueError(f"Unmerged tracked source: {name}")
+            mode, blob = first, second
+        else:
+            if second != "blob":
+                raise ValueError(f"Unsupported tracked source object: {name}")
+            mode, blob = first, third
+        if mode not in ("100644", "100755", "120000"):
+            raise ValueError(f"Unsupported tracked source mode: {name}")
+        entries[name] = (mode, blob)
+    return entries
+
+
+def materialize_source(source, output, revision=None):
+    """Create a new, isolated checkout from raw committed Git blob bytes.
+
+    This explicit operation selects committed content, not the caller's working
+    files or index. It never changes the caller's checkout. No checkout, status,
+    clean/smudge filter, archive export transform or external filter is used.
+    Use the resulting root for the SDK, dependency builds and final export.
+    """
+    source = Path(source).resolve(strict=True)
+    output = Path(output).absolute()
+    require_new(output)
+    if output.resolve().is_relative_to(source):
+        raise ValueError("Materialized source must be outside the input repository")
+    revision = git(source, "rev-parse", "HEAD") if revision is None else revision
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", revision):
+        raise ValueError("Source materialization requires a full committed revision")
+    if git(source, "rev-parse", "--verify", revision + "^{commit}") != revision:
+        raise ValueError("Source revision must identify a commit directly")
+    tree = git(source, "rev-parse", revision + "^{tree}")
+    repository = git(source, "remote", "get-url", "origin")
+    if not repository:
+        raise ValueError("Source repository needs an origin identity")
+    entries = tracked_git_entries(source, "ls-tree", "-r", "-z", "--full-tree", revision)
+    # Validate the whole path set before creating any symlinks or directories.
+    for name in entries:
+        parts = name.split("/")
+        if any("/".join(parts[:i]) in entries for i in range(1, len(parts))):
+            raise ValueError(f"Tracked source paths overlap: {name}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.parent.resolve() != output.parent:
+        raise ValueError("Materialized source parent must contain no directory aliases")
+    with tempfile.TemporaryDirectory(prefix="raw-source-", dir=output.parent) as temporary:
+        checkout = Path(temporary) / "source"
+        git_bytes(source, "-c", "core.autocrlf=false", "clone", "--quiet", "--no-local",
+                  "--no-checkout", "--template=", "--", str(source), str(checkout))
+        git(checkout, "config", "remote.origin.url", repository)
+        git(checkout, "config", "core.autocrlf", "false")
+        git(checkout, "update-ref", "--no-deref", "HEAD", revision)
+        git(checkout, "read-tree", revision)
+        with tempfile.TemporaryFile() as errors:
+            process = subprocess.Popen(git_command(checkout, "cat-file", "--batch"),
+                                       env=git_environment(), stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=errors)
+            try:
+                for name, (mode, blob) in sorted(entries.items()):
+                    process.stdin.write(blob.encode("ascii") + b"\n")
+                    process.stdin.flush()
+                    header = process.stdout.readline().split()
+                    if (len(header) != 3 or header[:2] != [blob.encode("ascii"), b"blob"] or
+                            not header[2].isdigit()):
+                        raise ValueError(f"Cannot read raw committed source blob: {name}")
+                    remaining = int(header[2])
+                    path = checkout / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    if mode == "120000":
+                        target = process.stdout.read(remaining)
+                        if len(target) != remaining:
+                            raise ValueError(f"Truncated source symlink blob: {name}")
+                        os.symlink(target, os.fsencode(path))
+                    else:
+                        with path.open("xb") as stream:
+                            while remaining:
+                                chunk = process.stdout.read(min(remaining, 1024 * 1024))
+                                if not chunk:
+                                    raise ValueError(f"Truncated source file blob: {name}")
+                                stream.write(chunk)
+                                remaining -= len(chunk)
+                        path.chmod(0o755 if mode == "100755" else 0o644)
+                    if process.stdout.read(1) != b"\n":
+                        raise ValueError(f"Malformed source blob framing: {name}")
+                process.stdin.close()
+                if process.wait():
+                    errors.seek(0)
+                    raise ValueError("Cannot materialize source: " + errors.read().decode(errors="replace"))
+            finally:
+                if not process.stdin.closed:
+                    process.stdin.close()
+                process.stdout.close()
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+        files = tracked_source_inventory(checkout, revision, tree)
+        require_new(output)
+        publish_new_directory(checkout, output)
+    return {"source": {"repository": repository, "revision": revision, "tree": tree, "clean": True},
+            "source_tree_sha256": source_inventory_sha256(files),
+            "path": str(output), "tracked_files": len(files)}
 
 
 def tracked_source_inventory(root, revision, tree):
@@ -49,36 +203,8 @@ def tracked_source_inventory(root, revision, tree):
             git(root, "rev-parse", "HEAD^{tree}") != tree):
         raise ValueError("Source checkout no longer matches the pinned revision/tree")
 
-    def git_entries(*args):
-        raw = subprocess.run(["git", "-C", str(root), *args], check=True,
-                             stdout=subprocess.PIPE).stdout
-        if not raw or not raw.endswith(b"\0"):
-            raise ValueError("Missing or malformed complete tracked source listing")
-        entries = {}
-        for item in raw[:-1].split(b"\0"):
-            header, raw_name = item.split(b"\t", 1)
-            first, second, third = header.decode("ascii").split(" ")
-            name = os.fsdecode(raw_name)
-            require_source_path(name)
-            if name in entries:
-                raise ValueError(f"Duplicate/unmerged tracked source: {name}")
-            if first == "160000":
-                raise ValueError("Submodules require explicit source identity support")
-            if args[0] == "ls-files":
-                if third != "0":
-                    raise ValueError(f"Unmerged tracked source: {name}")
-                mode, blob = first, second
-            else:
-                if second != "blob":
-                    raise ValueError(f"Unsupported tracked source object: {name}")
-                mode, blob = first, third
-            if mode not in ("100644", "100755", "120000"):
-                raise ValueError(f"Unsupported tracked source mode: {name}")
-            entries[name] = (mode, blob)
-        return entries
-
-    index = git_entries("ls-files", "--stage", "-z")
-    if index != git_entries("ls-tree", "-r", "-z", "--full-tree", revision):
+    index = tracked_git_entries(root, "ls-files", "--stage", "-z")
+    if index != tracked_git_entries(root, "ls-tree", "-r", "-z", "--full-tree", revision):
         raise ValueError("Source index differs from the pinned source tree")
     files = {}
     for name, (mode, blob) in sorted(index.items()):
@@ -155,15 +281,18 @@ def build_runtime_sdk(source, bootstrap_sdk, output, jobs=1):
     bootstrap_sdk = Path(bootstrap_sdk).absolute()
     output = Path(output).absolute()
     require_new(output)
-    if git(source, "status", "--porcelain", "--untracked-files=all"):
-        raise ValueError("Source repository must be clean and committed")
+    if output.resolve().is_relative_to(source):
+        raise ValueError("SDK output must be outside the source checkout")
     revision = git(source, "rev-parse", "HEAD")
     tree = git(source, "rev-parse", "HEAD^{tree}")
+    # Git status normalizes text and can invoke external clean filters. Require
+    # exact committed bytes instead, then separately reject untracked inputs.
+    source_files = tracked_source_inventory(source, revision, tree)
+    if git_bytes(source, "ls-files", "--others", "--exclude-standard", "-z"):
+        raise ValueError("Source repository must have no untracked inputs")
     repository = git(source, "remote", "get-url", "origin")
     if not repository:
         raise ValueError("Source repository needs an origin identity")
-    if any(line.startswith("160000 ") for line in git(source, "ls-files", "--stage").splitlines()):
-        raise ValueError("Submodules require explicit source identity support")
     pins = load_pins(source)["cosmocc"]
     # Inventory validates links even though the existing bootstrap tree hash
     # deliberately fingerprints link text rather than resolving it.
@@ -182,14 +311,13 @@ def build_runtime_sdk(source, bootstrap_sdk, output, jobs=1):
     with tempfile.TemporaryDirectory(prefix="source-runtime-", dir=output.parent) as temporary:
         temporary = Path(temporary)
         checkout = temporary / "source"
-        # No worktree files, ignored object caches, or local hardlinks survive.
-        subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "clone", "--quiet",
-                        "--no-local", "--no-checkout", str(source), str(checkout)], check=True)
-        subprocess.run(["git", "-C", str(checkout), "-c", "core.hooksPath=/dev/null",
-                        "checkout", "--quiet", "--detach", revision], check=True)
+        # No filters, line-ending conversion, worktree files, ignored object
+        # caches or local hardlinks survive into the actual build checkout.
+        materialize_source(source, checkout, revision)
         for name in ("o", ".cosmocc", "cosmocc"):
             require_new(checkout / name)
-        source_files = tracked_source_inventory(checkout, revision, tree)
+        if tracked_source_inventory(checkout, revision, tree) != source_files:
+            raise ValueError("Materialized source differs from the selected committed bytes")
         if load_pins(checkout)["cosmocc"] != pins:
             raise ValueError("Source bootstrap pins differ from the pinned checkout")
         features = source_features(checkout)
@@ -241,7 +369,7 @@ def build_runtime_sdk(source, bootstrap_sdk, output, jobs=1):
         (staged / MANIFEST).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
         verify_runtime_sdk(staged)
         require_new(output)
-        staged.rename(output)
+        publish_new_directory(staged, output)
     return record
 
 
@@ -250,6 +378,10 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     verify = commands.add_parser("verify")
     verify.add_argument("--sdk", type=Path, required=True)
+    materialize = commands.add_parser("materialize", help="Create an isolated exact-blob source checkout")
+    materialize.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[1])
+    materialize.add_argument("--output", type=Path, required=True)
+    materialize.add_argument("--revision", help="Full commit ID; defaults to the source repository's HEAD")
     build = commands.add_parser("build")
     build.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[1])
     build.add_argument("--bootstrap-sdk", type=Path, required=True)
@@ -257,8 +389,12 @@ def main():
     build.add_argument("--jobs", type=int, default=1)
     args = parser.parse_args()
     try:
-        record = (verify_runtime_sdk(args.sdk) if args.command == "verify" else
-                  build_runtime_sdk(args.source, args.bootstrap_sdk, args.output, args.jobs))
+        if args.command == "verify":
+            record = verify_runtime_sdk(args.sdk)
+        elif args.command == "materialize":
+            record = materialize_source(args.source, args.output, args.revision)
+        else:
+            record = build_runtime_sdk(args.source, args.bootstrap_sdk, args.output, args.jobs)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"source runtime: {error}\n")
     print(json.dumps(record, sort_keys=True))

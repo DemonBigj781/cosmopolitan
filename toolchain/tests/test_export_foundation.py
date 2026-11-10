@@ -5,12 +5,14 @@ EASY_DIFFUSION_CONSUMER_DIR to opt into the separate consumer contract checks.
 """
 import copy
 import hashlib
+import io
 import json
 import os
 import subprocess
 from pathlib import Path
 import sys
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
 
@@ -322,6 +324,118 @@ class FoundationExportTest(unittest.TestCase):
         revision = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
         raw = subprocess.check_output(["git", "-C", str(repository), "archive", "--format=tar", revision, "."])
         self.assertEqual(exporter.git_archive_sha256(repository, revision), hashlib.sha256(raw).hexdigest())
+
+    def test_candidate_archive_ignores_inherited_git_environment(self):
+        from source_runtime import git, git_bytes
+        repository = self.root / "repository"
+        other = self.root / "other-repository"
+        repository.mkdir()
+        other.mkdir()
+        git_bytes(repository, "init", "-q")
+        git_bytes(other, "init", "-q")
+        self.write("repository/tracked.txt", b"selected committed bytes")
+        git_bytes(repository, "add", ".")
+        git_bytes(repository, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                  "-c", "commit.gpgsign=false", "commit", "-qm", "archive fixture")
+        revision = git(repository, "rev-parse", "HEAD")
+        expected = hashlib.sha256(git_bytes(repository, "archive", "--format=tar", revision, ".")).hexdigest()
+        global_config = self.write("global.gitconfig", b"[tar]\n\tumask = 0000\n")
+        overrides = {"GIT_DIR": str(other / ".git"), "GIT_WORK_TREE": str(other),
+                     "GIT_INDEX_FILE": str(self.root / "foreign-index"),
+                     "GIT_CONFIG_GLOBAL": str(global_config), "GIT_CONFIG_COUNT": "1",
+                     "GIT_CONFIG_KEY_0": "tar.umask", "GIT_CONFIG_VALUE_0": "0000"}
+        with patch.dict(os.environ, overrides):
+            self.assertEqual(exporter.git_archive_sha256(repository, revision), expected)
+
+    def test_candidate_archive_ignores_local_overrides_but_keeps_committed_attributes(self):
+        from source_runtime import git, git_bytes
+        repository = self.root / "repository"
+        repository.mkdir()
+        git_bytes(repository, "init", "-q", "--template=")
+        self.write("repository/.gitattributes", b"committed-ignore.txt export-ignore\ncommitted-subst.txt export-subst\n")
+        self.write("repository/tracked.txt", b"selected committed bytes")
+        self.write("repository/committed-ignore.txt", b"excluded by committed attributes")
+        self.write("repository/committed-subst.txt", b"commit=$Format:%H$\n")
+        git_bytes(repository, "add", ".")
+        git_bytes(repository, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                  "-c", "commit.gpgsign=false", "commit", "-qm", "archive attributes fixture")
+        revision = git(repository, "rev-parse", "HEAD")
+        raw = git_bytes(repository, "-c", "core.attributesFile=" + os.devnull,
+                        "-c", "tar.umask=0002", "archive", "--format=tar", revision, ".")
+        expected = hashlib.sha256(raw).hexdigest()
+        with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+            self.assertNotIn("committed-ignore.txt", archive.getnames())
+            self.assertEqual(archive.extractfile("committed-subst.txt").read(), ("commit=" + revision + "\n").encode())
+        self.assertEqual(exporter.git_archive_sha256(repository, revision), expected)
+        info_attributes = self.write("repository/.git/info/attributes", b"tracked.txt export-ignore\ncommitted-ignore.txt -export-ignore\n")
+        external_attributes = self.write("local.attributes", b"* export-ignore\n")
+        git_bytes(repository, "config", "core.attributesFile", str(external_attributes))
+        git_bytes(repository, "config", "tar.umask", "0000")
+        config_path = repository / ".git/config"
+        original_config, original_attributes = config_path.read_bytes(), info_attributes.read_bytes()
+        self.assertNotEqual(hashlib.sha256(git_bytes(repository, "archive", "--format=tar", revision, ".")).hexdigest(), expected)
+        self.assertEqual(exporter.git_archive_sha256(repository, revision), expected)
+        self.assertEqual(config_path.read_bytes(), original_config)
+        self.assertEqual(info_attributes.read_bytes(), original_attributes)
+
+    def test_crlf_materialization_matches_real_export_source_gate(self):
+        from source_runtime import git_bytes, materialize_source, tracked_source_inventory
+        repository = self.root / "repository"
+        repository.mkdir()
+        git_bytes(repository, "init", "-q")
+        git_bytes(repository, "config", "user.name", "Fixture")
+        git_bytes(repository, "config", "user.email", "fixture@example.invalid")
+        git_bytes(repository, "config", "core.autocrlf", "false")
+        git_bytes(repository, "remote", "add", "origin", "https://github.com/example/foundation.git")
+        self.write("repository/.gitattributes", b"*.bat text eol=crlf\n*.txt filter=blocked\n")
+        self.write("repository/.gitignore", b"/o/\n")
+        self.write("repository/fetch.bat", b"first line\nsecond line\n")
+        self.write("repository/filter.txt", b"unfiltered committed bytes\n")
+        abi_paths = ("libc/nt/struct/sid.h", "libc/dlopen/dladdr.c",
+                     "libc/intrin/fds.h", "libc/proc/posix_spawn.c")
+        for name in (*abi_paths, "tool/cosmocc/package.sh"):
+            self.write("repository/" + name, ("synthetic source: " + name).encode())
+        git_bytes(repository, "add", ".")
+        git_bytes(repository, "-c", "commit.gpgsign=false", "commit", "-qm", "CRLF fixture")
+        (repository / "fetch.bat").unlink()
+        git_bytes(repository, "checkout-index", "--force", "--all")
+        original = (repository / "fetch.bat").read_bytes()
+        self.assertIn(b"\r\n", original)
+        canonical = self.root / "canonical"
+        materialized = materialize_source(repository, canonical)
+        self.assertEqual((repository / "fetch.bat").read_bytes(), original)
+        self.assertEqual((canonical / "fetch.bat").read_bytes(), b"first line\nsecond line\n")
+        source = materialized["source"]
+        files = tracked_source_inventory(canonical, source["revision"], source["tree"])
+        inputs = {"schema_version": 1, "kind": "cosmopolitan-tracked-source-inputs",
+                  "source": source, "files": files}
+        inventory_path = self.write("sdk/SOURCE_INPUTS.json", json.dumps(inputs).encode())
+        # Synthetic SDK source evidence exercises the actual export source gate;
+        # this fixture is not a compiled SDK or a complete export invocation.
+        record = {"source": source, "source_patches": [],
+                  "source_tree_sha256": exporter.canonical_hash(files),
+                  "source_inventory_record": {"path": "SOURCE_INPUTS.json",
+                                              "sha256": exporter.digest_file(inventory_path)},
+                  "source_abi_inputs": {name: files[name]["sha256"] for name in abi_paths},
+                  "producer": {"entrypoint": "tool/cosmocc/package.sh",
+                               "sha256": files["tool/cosmocc/package.sh"]["sha256"]}}
+        self.write("sdk/SOURCE_RUNTIME.json", json.dumps(record).encode())
+        with self.assertRaisesRegex(ValueError, "pinned Git blob"):
+            exporter.verify_source(repository, self.root / "sdk", record)
+        # Any clean-filter invocation would fail. Raw source verification must
+        # not invoke one even though attributes name a configured filter.
+        git_bytes(canonical, "config", "filter.blocked.required", "true")
+        git_bytes(canonical, "config", "filter.blocked.clean", "false")
+        self.assertEqual(exporter.verify_source(canonical, self.root / "sdk", record), inputs)
+        self.write("canonical/o/generated.o", b"ignored output")
+        self.assertEqual(exporter.verify_source(canonical, self.root / "sdk", record), inputs)
+        extra = self.write("canonical/nonignored.log", b"unexpected input")
+        with self.assertRaisesRegex(ValueError, "nonignored untracked"):
+            exporter.verify_source(canonical, self.root / "sdk", record)
+        extra.unlink()
+        (canonical / "fetch.bat").write_bytes(b"changed raw bytes\n")
+        with self.assertRaisesRegex(ValueError, "pinned Git blob"):
+            exporter.verify_source(canonical, self.root / "sdk", record)
 
     def test_runtime_identity_changes_with_compiler_support_but_not_export_location(self):
         stage, verified, pin = self.assembly_fixture()
