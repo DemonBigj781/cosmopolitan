@@ -35,6 +35,8 @@ to Mesa and LLVM. The application is built, but workloads are not verified.
 COSMO_RUNTIME_PROFILE=source-built requires COSMO_RUNTIME_SDK to name a complete
 source-built SDK. Start with a fresh default o/rust-ape tree for that profile.
 COSMOCC and COSMO, if set, must name o/rust-ape/sdk/vendor/cosmocc after setup.
+WGPU_APPLICATION_PATCH_MANIFEST optionally names an ordered SHA-256-checked
+application patch manifest; see APPLICATION_PATCHES.md. No patches are assumed.
 
 Run --version to check C/Rust linkage without Vulkan. Run without arguments
 for shader dispatch/readback using a host Vulkan loader and driver. Use
@@ -59,6 +61,11 @@ if ((webgpu_software)) && [[ -n ${LAVAPIPE_OUT:-} ]]; then
   exit 2
 fi
 mkdir -p -- "$webgpu_out"
+# A failed rebuild must not retain a success receipt from an older archive.
+rm -f -- "$webgpu_out/BUILD.json" "$webgpu_out/SHA256SUMS" \
+  "$webgpu_out/build-commands.json" "$webgpu_out/cargo-invocation.json"
+webgpu_build_script_sha256=$(sha256sum "$webgpu_dir/build.sh" | cut -d ' ' -f1)
+webgpu_receipt_helper_sha256=$(sha256sum "$webgpu_dir/build_receipt.py" | cut -d ' ' -f1)
 export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2}
 export WGPU_NATIVE_VERSION=v29.0.1.1
 
@@ -91,13 +98,21 @@ python3 "$webgpu_dir/prepare.py"
 # Bindgen must read the same C scalar definitions as the Cosmopolitan compiler.
 # Its default Linux target would otherwise discover the build host's headers.
 export BINDGEN_EXTRA_CLANG_ARGS="-I\"$webgpu_sdk/vendor/cosmocc/include\" -include \"$webgpu_sdk/vendor/cosmocc/include/libc/normalize.inc\" ${BINDGEN_EXTRA_CLANG_ARGS:-}"
-bash "$webgpu_rust" cargo --config "$webgpu_out/cargo.cosmo.toml" \
-  build --manifest-path "$webgpu_out/source/Cargo.toml" --locked \
-  --release --lib --no-default-features --features wgsl,vulkan \
-  --message-format=json-render-diagnostics > "$webgpu_out/cargo-artifacts.jsonl"
+webgpu_prepared_sha256=$(python3 "$webgpu_dir/source_receipt.py" --output "$webgpu_out")
+# The wrapper records the expanded Cargo argv and its whitelisted environment
+# just before exec. Never accept a caller-provided invocation receipt path.
+COSMO_RUST_CARGO_RECEIPT="$webgpu_out/cargo-invocation.json" \
+  bash "$webgpu_rust" cargo --config "$webgpu_out/cargo.cosmo.toml" \
+    build --manifest-path "$webgpu_out/source/Cargo.toml" --locked \
+    --release --lib --no-default-features --features wgsl,vulkan \
+    --message-format=json-render-diagnostics > "$webgpu_out/cargo-artifacts.jsonl"
 
 webgpu_archive="$webgpu_repo/o/rust-ape/build/x86_64-unknown-linux-musl/release/libwgpu_native.a"
 test -s "$webgpu_archive"
+webgpu_cargo_evidence=$(python3 "$webgpu_dir/build_receipt.py" verify-cargo \
+  "$webgpu_out" "$webgpu_sdk" "$webgpu_runtime" "$webgpu_archive")
+read -r webgpu_cargo_invocation_sha256 webgpu_cargo_artifacts_sha256 <<< "$webgpu_cargo_evidence"
+webgpu_archive_sha256=$(sha256sum "$webgpu_archive" | cut -d ' ' -f1)
 if [[ ${COSMO_RUNTIME_PROFILE:-stock-sdk} == source-built ]]; then
   python3 - "$webgpu_repo/toolchain" "$webgpu_archive" <<'PY'
 import sys
@@ -143,30 +158,43 @@ PY
 fi
 # PTHREAD_MUTEX_INITIALIZER in this Cosmocc release initializes trailing
 # private fields implicitly; -Wextra otherwise warns about the SDK macro.
-"$webgpu_sdk/generated/linker-x86_64.bash" \
+webgpu_link_command=("$webgpu_sdk/generated/linker-x86_64.bash" \
   -mcosmo -std=c11 -O2 -g -fno-omit-frame-pointer -fno-stack-protector \
   -Wall -Wextra -Werror -Wno-missing-field-initializers \
-  -I"$webgpu_dir/upstream/ffi" \
-  -I"$webgpu_dir/upstream/ffi/webgpu-headers" \
+  -I"$webgpu_out/source/ffi" \
+  -I"$webgpu_out/source/ffi/webgpu-headers" \
   -I"$webgpu_dir/runtime" -I"$webgpu_out/generated" \
   "$webgpu_dir/examples/compute.c" \
   "$webgpu_dir/runtime/vulkan_loader.c" \
   "$webgpu_dir/runtime/win64_bridge.c" \
   "$webgpu_archive" "${webgpu_software_args[@]}" \
   -Wl,--gc-sections -pthread -lm -ldl \
-  -o "$webgpu_out/webgpu_compute.dbg"
+  -o "$webgpu_out/webgpu_compute.dbg")
+python3 "$webgpu_dir/build_receipt.py" record-command "$webgpu_out/build-commands.json" \
+  link "${webgpu_link_command[@]}"
+"${webgpu_link_command[@]}"
 
 # Keep APE/PE support. The Linux-only apelink -V1 option is not used.
-sh "$webgpu_sdk/vendor/cosmocc/bin/apelink" \
+webgpu_apelink_command=(sh "$webgpu_sdk/vendor/cosmocc/bin/apelink" \
   -l "$webgpu_sdk/vendor/cosmocc/bin/ape-x86_64.elf" \
-  -o "$webgpu_out/webgpu_compute" "$webgpu_out/webgpu_compute.dbg"
-python3 "$webgpu_dir/configure_pe.py" "$webgpu_out/webgpu_compute"
+  -o "$webgpu_out/webgpu_compute" "$webgpu_out/webgpu_compute.dbg")
+python3 "$webgpu_dir/build_receipt.py" record-command "$webgpu_out/build-commands.json" \
+  apelink "${webgpu_apelink_command[@]}"
+"${webgpu_apelink_command[@]}"
+webgpu_pe_command=(python3 "$webgpu_dir/configure_pe.py" "$webgpu_out/webgpu_compute")
+python3 "$webgpu_dir/build_receipt.py" record-command "$webgpu_out/build-commands.json" \
+  configure_pe "${webgpu_pe_command[@]}"
+"${webgpu_pe_command[@]}"
+webgpu_commands_sha256=$(sha256sum "$webgpu_out/build-commands.json" | cut -d ' ' -f1)
 cp -- "$webgpu_sdk/vendor/cosmocc/bin/ape-x86_64.elf" "$webgpu_out/ape-x86_64.elf"
 chmod +x -- "$webgpu_out/webgpu_compute" "$webgpu_out/ape-x86_64.elf"
 
 python3 "$webgpu_dir/package_notices.py"
 python3 - "$webgpu_out" "$webgpu_dir/Cargo.cosmo.lock" "$webgpu_software" \
-  "$webgpu_compile_only" "$webgpu_runtime" "$webgpu_archive" "$webgpu_sdk" <<'PY'
+  "$webgpu_compile_only" "$webgpu_runtime" "$webgpu_archive" "$webgpu_sdk" \
+  "$webgpu_prepared_sha256" "$webgpu_cargo_invocation_sha256" "$webgpu_cargo_artifacts_sha256" \
+  "$webgpu_archive_sha256" "$webgpu_commands_sha256" "$webgpu_build_script_sha256" \
+  "$webgpu_receipt_helper_sha256" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -179,6 +207,20 @@ software = sys.argv[3] == "1"
 compile_only = sys.argv[4] == "1"
 runtime = json.loads(sys.argv[5])
 archive, sdk = map(Path, sys.argv[6:8])
+prepared_sha, invocation_sha, artifacts_sha, archive_sha, commands_sha, script_sha, helper_sha = sys.argv[8:15]
+foundation = out.parent.parent / "third_party/wgpu_native"
+sys.path.insert(0, str(foundation))
+from source_receipt import file_sha256, tree_receipt, verify_prepared
+from build_receipt import verify_cargo
+
+prepared, _ = verify_prepared(out, foundation, prepared_sha)
+cargo_evidence = verify_cargo(out, sdk, runtime, archive, invocation_sha, artifacts_sha)
+for path, expected in ((archive, archive_sha), (out / "build-commands.json", commands_sha),
+                       (foundation / "build.sh", script_sha), (foundation / "build_receipt.py", helper_sha)):
+    if file_sha256(path) != expected:
+        raise SystemExit("WebGPU build input or evidence changed during the link: " + str(path))
+if tree_receipt(out / "licenses/application-patches") != prepared["application_patch_provenance"]:
+    raise SystemExit("Packaged application patch provenance does not match the preparation")
 sys.path.insert(0, str(out.parent.parent / "toolchain"))
 from runtime_identity import selected_runtime
 from static_archives import archive_sha256, verify_archives
@@ -200,7 +242,28 @@ manifest = {
     "cosmocc": "4.0.2" if runtime["kind"] == "stock-sdk" else "source-built",
     "runtime": runtime,
     "rust": "nightly-2026-07-28",
+    "rust_target": "x86_64-unknown-linux-musl",
+    "rust_target_spec_sha256": cargo_evidence["cargo_invocation"]["target_sha256"],
     "features": ["wgsl", "vulkan"],
+    "application_patches": prepared["application_patches"],
+    "application_patch_order": prepared["application_patch_order"],
+    "application_patch_licenses_path": "licenses/application-patches",
+    "prepared_receipt_sha256": prepared_sha,
+    "prepared_source_sha256": prepared["prepared_source_sha256"],
+    "prepared_lock_sha256": prepared["prepared_lock_sha256"],
+    "foundation_inputs": prepared["foundation_inputs"],
+    "cargo_artifacts_sha256": artifacts_sha,
+    "cargo_invocation_sha256": invocation_sha,
+    "build_recipe": {
+        "cargo": cargo_evidence["cargo_invocation"],
+        "commands": json.loads((out / "build-commands.json").read_text()),
+        "commands_sha256": commands_sha,
+        "build_script_sha256": script_sha,
+        "receipt_helper_sha256": helper_sha,
+    },
+    # This names the delivery container, not optimizer/codegen behavior. It
+    # does not claim that each libstd object survives archive extraction/GC.
+    "rust_std_delivery": {"mode": "embedded-in-wgpu", "container_sha256": archive_sha},
     "build_status": "built",
     "compile_only": compile_only,
     "probes": {
@@ -216,7 +279,7 @@ manifest = {
     "lock_sha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
     "application_sha256": hashlib.sha256((out / "webgpu_compute").read_bytes()).hexdigest(),
     "wgpu_archive_sha256": (archive_sha256(archive) if runtime["kind"] != "stock-sdk"
-                            else hashlib.sha256(archive.read_bytes()).hexdigest()),
+                            else file_sha256(archive)),
     "rust_shim_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                         for path in shims},
     "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
@@ -239,6 +302,7 @@ if software:
     shutil.copytree(notices, out / "licenses/software-vulkan", dirs_exist_ok=True)
 (out / "BUILD.json").write_text(json.dumps(manifest, indent=2) + "\n")
 PY
-(cd -- "$webgpu_out" && sha256sum webgpu_compute ape-x86_64.elf BUILD.json > SHA256SUMS)
+(cd -- "$webgpu_out" && sha256sum webgpu_compute ape-x86_64.elf BUILD.json PREPARED.json \
+  cargo-artifacts.jsonl cargo-invocation.json build-commands.json > SHA256SUMS)
 printf '\nBuilt %s\n' "$webgpu_out/webgpu_compute"
 printf 'Run bash third_party/wgpu_native/test.sh for startup and compute checks.\n'

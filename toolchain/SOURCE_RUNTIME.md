@@ -41,6 +41,31 @@ inventory. `runtime_identity` is a canonical SHA256 of this record. Verification
 rejects missing, extra, changed or escaping files and incomplete runtime layouts.
 Internal relative symlinks are retained, not replaced with their target text.
 
+New source SDKs also include `SOURCE_INPUTS.json`, with `schema_version: 1`,
+`kind: "cosmopolitan-tracked-source-inputs"`, the same `source` identity, and a
+complete `files` mapping. Each tracked path records its Git mode (`100644`,
+`100755`, or `120000`), type, byte size and SHA256. Symlink entries additionally
+record their target; their hash covers the target bytes without following the
+link. This does not relax the packaged SDK's symlink checks.
+
+The producer verifies the index against the pinned Git tree and every tracked
+working file against its Git blob before and after packaging, including files
+hidden from `git status` by assume-unchanged or skip-worktree flags. Generated
+untracked or ignored build outputs are not tracked source inputs.
+`SOURCE_RUNTIME.json` binds the raw inventory bytes through
+`source_inventory_record: {"path": "SOURCE_INPUTS.json", "sha256": "..."}`.
+Its `source_tree_sha256` is SHA256 of the canonical complete `files` mapping,
+not SHA256 of the Git tree identifier. Canonical JSON uses sorted keys, compact
+separators and ASCII escaping. The SDK file inventory also includes this record.
+`source_patches: []` means no patches were applied after the pinned source commit;
+Rust and WebGPU adaptation patches are identified separately.
+
+Verification requires no original source checkout and cross-checks source ABI
+and package-recipe hashes against the complete source inventory. Legacy SDKs are
+accepted only when all three new manifest fields and `SOURCE_INPUTS.json` are
+absent. Partial or orphaned evidence is rejected. Foundation export requires the
+new evidence and preserves the original source records' bytes.
+
 This is content identity, not a signed attestation or proof of runtime behavior.
 Host tools are not hermetically pinned. The Rust adapter profile pins selected
 ABI source fingerprints and its adaptation patch; those checks cannot prove all

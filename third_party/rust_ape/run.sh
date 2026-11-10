@@ -211,6 +211,74 @@ for name in ("libc", "errno"):
     config += f"{name} = {{ path = {json.dumps(str(sdk / 'vendor/patches' / name))} }}\n"
 (sdk / "generated/cargo.cosmo.toml").write_text(config)
 PY
-exec cargo --config "$rust_ape_sdk/generated/cargo.cosmo.toml" \
-  -Z json-target-spec -Z build-std=std,panic_abort,panic_unwind \
-  -Z build-std-features= "$@"
+rust_ape_cargo_args=(--config "$rust_ape_sdk/generated/cargo.cosmo.toml"
+  -Z json-target-spec -Z build-std=std,panic_abort,panic_unwind
+  -Z build-std-features= "$@")
+if [[ -n ${COSMO_RUST_CARGO_RECEIPT:-} ]]; then
+  # This is invocation evidence only. A successful consumer must separately
+  # bind its hash to the selected compiler artifact and verified runtime.
+  python3 - "$COSMO_RUST_CARGO_RECEIPT" "$rust_ape_sdk" "$rust_ape_repo" \
+    "$rust_ape_source/run.sh" "$rust_ape_nightly" "${rust_ape_cargo_args[@]}" <<'PY_RECEIPT'
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+output, sdk, repo, wrapper = map(Path, sys.argv[1:5])
+nightly = sys.argv[5]
+argv = ["cargo", *sys.argv[6:]]
+sys.path.insert(0, str(repo / "toolchain"))
+from runtime_identity import selected_runtime
+
+runtime = selected_runtime(sdk / "vendor/cosmocc")
+if runtime["kind"] != "stock-sdk":
+    sys.path.insert(0, str(repo / "third_party/rust_ape"))
+    from runtime_profile import verify_binding
+    verify_binding(sdk)
+configs = [Path(argv[index + 1]) for index, arg in enumerate(argv[:-1]) if arg == "--config"]
+# The wrapper uses file configs, as does WebGPU. Refuse ambiguous inline
+# configurations when this optional file-receipt contract is requested.
+if any(not path.is_file() for path in configs):
+    raise SystemExit("Cargo invocation receipt requires --config file paths")
+keys = (
+    "RUSTUP_TOOLCHAIN", "CARGO_BUILD_TARGET", "CARGO_TARGET_DIR", "CARGO_BUILD_JOBS",
+    "RUSTFLAGS", "__CARGO_TESTS_ONLY_SRC_ROOT", "WGPU_NATIVE_VERSION",
+    "BINDGEN_EXTRA_CLANG_ARGS", "LIBCLANG_PATH", "COSMO_RUNTIME_PROFILE", "COSMO",
+    "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_INCREMENTAL",
+    "CARGO_PROFILE_RELEASE_OPT_LEVEL", "CARGO_PROFILE_RELEASE_DEBUG",
+    "CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO", "CARGO_PROFILE_RELEASE_STRIP",
+    "CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS", "CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS",
+    "CARGO_PROFILE_RELEASE_LTO", "CARGO_PROFILE_RELEASE_PANIC",
+    "CARGO_PROFILE_RELEASE_INCREMENTAL", "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
+)
+triple = "_".join(Path(os.environ["CARGO_BUILD_TARGET"]).stem.split("-"))
+keys += tuple(prefix + "_" + triple for prefix in ("CC", "CXX", "AR", "CFLAGS", "CXXFLAGS"))
+checksum = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+receipt = {
+    "schema_version": 1,
+    "status": "invocation-only",
+    "argv": argv,
+    "cwd": str(Path.cwd()),
+    "rust": nightly,
+    "runtime": runtime,
+    "wrapper_sha256": checksum(wrapper),
+    "config_sha256": {str(path.absolute()): checksum(path) for path in configs},
+    "target_sha256": checksum(Path(os.environ["CARGO_BUILD_TARGET"])),
+    "environment": {key: os.environ[key] for key in keys if key in os.environ},
+    "ignored_environment": ["CARGO_ENCODED_RUSTFLAGS"],
+}
+output.parent.mkdir(parents=True, exist_ok=True)
+if output.is_symlink():
+    raise SystemExit("Cargo invocation receipt destination cannot be a symlink")
+fd, temporary = tempfile.mkstemp(prefix=".cargo-receipt-", dir=output.parent)
+try:
+    with os.fdopen(fd, "w") as stream:
+        stream.write(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+    os.replace(temporary, output)
+finally:
+    Path(temporary).unlink(missing_ok=True)
+PY_RECEIPT
+fi
+exec cargo "${rust_ape_cargo_args[@]}"

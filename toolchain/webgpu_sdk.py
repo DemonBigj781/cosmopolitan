@@ -16,6 +16,8 @@ from static_archives import archive_sha256, verify_archives
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "third_party/wgpu_native"))
+from source_receipt import file_sha256, tree_receipt, verify_prepared
 
 
 def sha256(path: Path) -> str:
@@ -158,6 +160,51 @@ def stage_webgpu_sdk(link_manifest: Path, wgpu_archive: Path,
     dependency_hashes(arguments, link, repository_root, source_runtime)
     expected_archives = link.get("link_archive_sha256")
 
+    # Legacy stock fixtures have no source receipt. Every source-runtime build
+    # and every new/explicitly application-patched build must bind prepared
+    # headers, rather than silently substituting the pristine public API.
+    receipted = source_runtime or any(key in build for key in (
+        "prepared_receipt_sha256", "prepared_source_sha256", "application_patches",
+        "application_patch_order"))
+    prepared = None
+    prepared_hash = None
+    build_hash = None
+    webgpu_output = repository_root / "o/webgpu"
+    native_source = repository_root / "third_party/wgpu_native/upstream"
+    if receipted:
+        prepared_hash = build.get("prepared_receipt_sha256")
+        if (not isinstance(prepared_hash, str) or len(prepared_hash) != 64 or
+                any(char not in "0123456789abcdef" for char in prepared_hash)):
+            raise ValueError("source/application-patched WebGPU SDK requires a prepared receipt hash")
+        webgpu_output = build_manifest.parent
+        build_hash = file_sha256(build_manifest)
+        if json.loads(build_manifest.read_text()) != build:
+            raise ValueError("WebGPU BUILD.json changed before SDK staging")
+        prepared, _ = verify_prepared(webgpu_output,
+                                      repository_root / "third_party/wgpu_native", prepared_hash)
+        if (build.get("application_patches") != prepared["application_patches"] or
+                build.get("application_patch_order") != prepared["application_patch_order"] or
+                build.get("prepared_source_sha256") != prepared["prepared_source_sha256"] or
+                build.get("prepared_lock_sha256") != prepared["prepared_lock_sha256"] or
+                build.get("foundation_inputs") != prepared["foundation_inputs"]):
+            raise ValueError("WebGPU BUILD.json differs from the prepared source receipt")
+        if build.get("wgpu_archive_sha256") != wgpu_hash:
+            raise ValueError("receipted WebGPU SDK requires its BUILD.json archive hash")
+        if build.get("application_patch_licenses_path") != "licenses/application-patches":
+            raise ValueError("WebGPU build lacks its application patch notice path")
+        if tree_receipt(webgpu_output / "licenses/application-patches") != prepared["application_patch_provenance"]:
+            raise ValueError("WebGPU packaged application patch provenance differs from preparation")
+        native_source = webgpu_output / "source"
+
+    def prepared_digest(source: Path) -> str | None:
+        if prepared is None:
+            return None
+        name = source.relative_to(native_source).as_posix()
+        entry = prepared["source_trees"]["source"]["entries"].get(name)
+        if not isinstance(entry, dict) or entry.get("kind") != "file":
+            raise ValueError(f"WebGPU input is absent from the prepared source receipt: {name}")
+        return entry["sha256"]
+
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="webgpu-sdk-", dir=output.parent) as temporary:
         stage = Path(temporary) / "webgpu-sdk"
@@ -204,29 +251,59 @@ def stage_webgpu_sdk(link_manifest: Path, wgpu_archive: Path,
         ))
 
         source_files = {
-            repository_root / "third_party/wgpu_native/upstream/ffi/wgpu.h": Path("include/wgpu.h"),
-            repository_root / "third_party/wgpu_native/upstream/ffi/webgpu-headers/webgpu.h": Path("include/webgpu.h"),
+            native_source / "ffi/wgpu.h": Path("include/wgpu.h"),
+            native_source / "ffi/webgpu-headers/webgpu.h": Path("include/webgpu.h"),
             repository_root / "third_party/wgpu_native/runtime/vulkan_loader.c": Path("runtime/vulkan_loader.c"),
             repository_root / "third_party/wgpu_native/runtime/vulkan_loader.h": Path("runtime/vulkan_loader.h"),
             repository_root / "third_party/wgpu_native/runtime/win64_bridge.c": Path("runtime/win64_bridge.c"),
             repository_root / "third_party/wgpu_native/runtime/win64_bridge.h": Path("runtime/win64_bridge.h"),
             repository_root / "third_party/lavapipe/register.c": Path("runtime/lavapipe_register.c"),
             repository_root / "third_party/lavapipe/register.h": Path("include/cosmo_lavapipe.h"),
-            repository_root / "o/webgpu/generated/vulkan_signatures.inc": Path("runtime/vulkan_signatures.inc"),
+            webgpu_output / "generated/vulkan_signatures.inc": Path("runtime/vulkan_signatures.inc"),
         }
         for source, destination in source_files.items():
-            hashes[destination.as_posix()] = copy_file(source, stage / destination)
+            expected = None
+            if source.is_relative_to(native_source):
+                expected = prepared_digest(source)
+            elif prepared is not None and source == webgpu_output / "generated/vulkan_signatures.inc":
+                expected = prepared["generated_inputs"]["generated/vulkan_signatures.inc"]
+            hashes[destination.as_posix()] = copy_file(source, stage / destination, expected)
 
         licenses = {
-            repository_root / "third_party/wgpu_native/upstream/LICENSE.APACHE": Path("licenses/wgpu-native/LICENSE.APACHE"),
-            repository_root / "third_party/wgpu_native/upstream/LICENSE.MIT": Path("licenses/wgpu-native/LICENSE.MIT"),
-            repository_root / "third_party/wgpu_native/upstream/ffi/webgpu-headers/LICENSE": Path("licenses/webgpu-headers/LICENSE"),
-            repository_root / "o/webgpu/NOTICE.txt": Path("licenses/wgpu-native/NOTICE.txt"),
+            native_source / "LICENSE.APACHE": Path("licenses/wgpu-native/LICENSE.APACHE"),
+            native_source / "LICENSE.MIT": Path("licenses/wgpu-native/LICENSE.MIT"),
+            native_source / "ffi/webgpu-headers/LICENSE": Path("licenses/webgpu-headers/LICENSE"),
         }
+        # Keep any additional application-provided author/license notices in
+        # the prepared native/header roots without replacing upstream licensing.
+        if prepared is not None:
+            for name, entry in prepared["source_trees"]["source"]["entries"].items():
+                relative = Path(name)
+                if (entry["kind"] == "file" and relative.parent in (Path("."), Path("ffi/webgpu-headers"))
+                        and relative.name.startswith(("LICENSE", "LICENCE", "COPYING", "NOTICE", "COPYRIGHT"))):
+                    directory = "wgpu-native" if relative.parent == Path(".") else "webgpu-headers"
+                    licenses[native_source / relative] = Path("licenses") / directory / relative.name
         for source, destination in licenses.items():
-            hashes[destination.as_posix()] = copy_file(source, stage / destination)
-        copy_tree(repository_root / "o/webgpu/licenses",
-                  stage / "licenses/wgpu-dependencies", hashes, stage)
+            hashes[destination.as_posix()] = copy_file(source, stage / destination, prepared_digest(source))
+        # The producer's build notice has a separate name to avoid overwriting
+        # an application-provided source NOTICE.txt.
+        build_notice = Path("licenses/wgpu-native/BUILD_NOTICE.txt" if prepared is not None
+                            else "licenses/wgpu-native/NOTICE.txt")
+        hashes[build_notice.as_posix()] = copy_file(webgpu_output / "NOTICE.txt", stage / build_notice)
+        copy_tree(webgpu_output / "licenses", stage / "licenses/wgpu-dependencies", hashes, stage)
+        if prepared is not None:
+            # copy_tree records file hashes. Preserve directory modes as well
+            # because the preparation receipt binds the full provenance tree.
+            provenance_source = webgpu_output / "licenses/application-patches"
+            provenance_destination = stage / "licenses/wgpu-dependencies/application-patches"
+            for directory in sorted((path for path in provenance_source.rglob("*") if path.is_dir()), reverse=True):
+                shutil.copystat(directory, provenance_destination / directory.relative_to(provenance_source))
+            if tree_receipt(stage / "licenses/wgpu-dependencies/application-patches") != prepared["application_patch_provenance"]:
+                raise ValueError("staged application patch provenance differs from preparation")
+            for name, source, expected in (("PREPARED.json", webgpu_output / "PREPARED.json", prepared_hash),
+                                          ("BUILD.json", build_manifest, build_hash)):
+                destination = Path("provenance/webgpu") / name
+                hashes[destination.as_posix()] = copy_file(source, stage / destination, expected)
         lavapipe_licenses = relocated_build_path(
             Path(link.get("licenses", "")), repository_root)
         copy_tree(lavapipe_licenses, stage / "licenses/software-vulkan",
@@ -254,6 +331,18 @@ def stage_webgpu_sdk(link_manifest: Path, wgpu_archive: Path,
         }
         if selected_runtime(rust_sdk / "vendor/cosmocc") != runtime:
             raise ValueError("selected runtime changed while staging the WebGPU SDK")
+        if prepared is not None:
+            verify_prepared(webgpu_output, repository_root / "third_party/wgpu_native", prepared_hash)
+            if file_sha256(build_manifest) != build_hash:
+                raise ValueError("WebGPU BUILD.json changed while staging the SDK")
+            metadata.update({
+                "header_source": "prepared",
+                "prepared_receipt_sha256": prepared_hash,
+                "prepared_source_sha256": prepared["prepared_source_sha256"],
+                "application_patches": prepared["application_patches"],
+                "application_patch_order": prepared["application_patch_order"],
+                "application_patch_licenses_path": "licenses/wgpu-dependencies/application-patches",
+            })
         (stage / "manifest.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
         if output.exists():
             if output.is_symlink() or not output.is_dir():

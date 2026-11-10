@@ -59,6 +59,12 @@ to the directory containing its shared library. Bindgen reads Cosmopolitan's
 headers and normalization include, so it does not infer C types from a
 different host runtime.
 
+Application-specific native API patches can be supplied explicitly using
+`WGPU_APPLICATION_PATCH_MANIFEST`. The default remains unmodified by application
+extensions. See [application patches and receipts](APPLICATION_PATCHES.md) for
+the input schema, prepared-source identity, Cargo/link evidence and declared
+Rust standard-library delivery contract.
+
 ## Run
 
 On Linux, check the C/Rust API without loading Vulkan:

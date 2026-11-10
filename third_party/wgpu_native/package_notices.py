@@ -5,6 +5,8 @@ from pathlib import Path
 import shutil
 import tomllib
 
+from source_receipt import tree_receipt, verify_prepared
+
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent.parent
 OUT = REPO / "o/webgpu"
@@ -26,6 +28,13 @@ def main():
     if DEST.exists():
         shutil.rmtree(DEST)
     DEST.mkdir(parents=True)
+    prepared, _ = verify_prepared(OUT, ROOT)
+    # Exact caller patch bytes and the manifest are provenance, not a new
+    # license grant. Keep their embedded notices and upstream licenses intact.
+    shutil.copytree(OUT / prepared["application_patch_provenance_path"],
+                    DEST / "application-patches")
+    if tree_receipt(DEST / "application-patches") != prepared["application_patch_provenance"]:
+        raise ValueError("Application patch provenance copy differs from prepared input")
     collect("cosmopolitan", REPO)
     collect("wgpu-native", ROOT / "upstream")
     collect("webgpu-headers", ROOT / "upstream/ffi/webgpu-headers")
@@ -61,6 +70,8 @@ def main():
         "Experimental Cosmopolitan WebGPU executable.\n"
         "Source: https://github.com/DemonBigj781/cosmopolitan-lua/tree/webgpu\n"
         "Retain the licenses/ directory when redistributing.\n"
+        "licenses/application-patches/ retains exact applied application patch provenance.\n"
+        "That provenance is not a license grant; retain any additional patch author notices.\n"
         "DEPENDENCIES.json also records host build tools; those tools are not runtime payloads.\n"
     )
     print(f"Collected license notices for {len(records)} Cargo packages")

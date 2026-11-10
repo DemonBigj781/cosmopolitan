@@ -8,6 +8,7 @@ import re
 import stat
 
 MANIFEST = "SOURCE_RUNTIME.json"
+SOURCE_INPUTS = "SOURCE_INPUTS.json"
 ARCHITECTURES = ["x86_64", "aarch64"]
 VARIANTS = ("", "dbg", "tiny", "sysv", "optlinux", "tinylinux")
 
@@ -103,6 +104,97 @@ def read_json(path):
     return json.loads(path.read_text(), object_pairs_hook=unique)
 
 
+def require_source_path(name):
+    """Keep tracked source names portable and unambiguous in content records."""
+    if (not isinstance(name, str) or not name or name.startswith("/") or
+            any(c in name for c in ("\\", "\n", "\r", "\x00")) or
+            any(part in ("", ".", "..", ".git") for part in name.split("/"))):
+        raise ValueError(f"Unsafe tracked source path: {name!r}")
+
+
+def source_inventory_sha256(files):
+    """Hash the entire tracked path/mode/type/content inventory, not a Git ID."""
+    return hashlib.sha256(canonical(files)).hexdigest()
+
+
+def verify_source_inputs(root, record):
+    """Verify portable source evidence without requiring the source checkout.
+
+    Older SDKs with no source inventory remain readable. Exporters can require
+    the new fields explicitly; incomplete or orphaned evidence is never legacy.
+    These records establish local content consistency, not signed provenance.
+    """
+    root = Path(root)
+    fields = ("source_tree_sha256", "source_inventory_record", "source_patches")
+    present = [key in record for key in fields]
+    path = root / SOURCE_INPUTS
+    if not any(present):
+        if path.exists() or path.is_symlink():
+            raise ValueError("Unbound source input inventory")
+        return None
+    if not all(present):
+        raise ValueError("Incomplete source input inventory evidence")
+    reference = record["source_inventory_record"]
+    if (not isinstance(reference, dict) or set(reference) != {"path", "sha256"} or
+            reference.get("path") != SOURCE_INPUTS or
+            not isinstance(reference.get("sha256"), str) or
+            not re.fullmatch(r"[0-9a-f]{64}", reference["sha256"])):
+        raise ValueError("Invalid source input inventory reference")
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Source input inventory must be a regular SOURCE_INPUTS.json")
+    if digest_file(path) != reference["sha256"]:
+        raise ValueError("Source input inventory record digest mismatch")
+    inputs = read_json(path)
+    if (not isinstance(inputs, dict) or
+            set(inputs) != {"schema_version", "kind", "source", "files"} or
+            type(inputs.get("schema_version")) is not int or inputs["schema_version"] != 1 or
+            inputs.get("kind") != "cosmopolitan-tracked-source-inputs" or
+            inputs.get("source") != record["source"]):
+        raise ValueError("Source input inventory identity mismatch")
+    files = inputs["files"]
+    if not isinstance(files, dict) or not files:
+        raise ValueError("Missing complete tracked source inventory")
+    for name, entry in files.items():
+        require_source_path(name)
+        if not isinstance(entry, dict):
+            raise ValueError(f"Invalid tracked source entry: {name}")
+        if (entry.get("mode"), entry.get("type")) not in (
+                ("100644", "file"), ("100755", "file"), ("120000", "symlink")):
+            raise ValueError(f"Unsupported tracked source type or mode: {name}")
+        expected = {"mode", "type", "size", "sha256"}
+        if entry["type"] == "symlink":
+            expected.add("target")
+        if (set(entry) != expected or type(entry.get("size")) is not int or entry["size"] < 0 or
+                not isinstance(entry.get("sha256"), str) or
+                not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])):
+            raise ValueError(f"Invalid tracked source fingerprint: {name}")
+        if entry["type"] == "symlink":
+            target = entry["target"]
+            if not isinstance(target, str) or not target or "\x00" in target:
+                raise ValueError(f"Invalid tracked source symlink: {name}")
+            target_bytes = os.fsencode(target)
+            if (len(target_bytes) != entry["size"] or
+                    hashlib.sha256(target_bytes).hexdigest() != entry["sha256"]):
+                raise ValueError(f"Tracked source symlink fingerprint mismatch: {name}")
+        parts = name.split("/")
+        if any("/".join(parts[:index]) in files for index in range(1, len(parts))):
+            raise ValueError(f"Tracked source paths overlap: {name}")
+    if record["source_tree_sha256"] != source_inventory_sha256(files):
+        raise ValueError("Complete source inventory digest mismatch")
+    # This producer builds the pinned commit directly. It applies no patch
+    # series afterwards; downstream adapters have their own patch identities.
+    if record["source_patches"] != []:
+        raise ValueError("Source runtime requires no patches after the pinned commit")
+    for name, digest in record["source_abi_inputs"].items():
+        if files.get(name, {}).get("type") != "file" or files[name]["sha256"] != digest:
+            raise ValueError(f"Source ABI fingerprint differs from complete inventory: {name}")
+    producer = record["producer"]
+    recipe = files.get(producer["entrypoint"], {})
+    if recipe.get("type") != "file" or recipe.get("sha256") != producer.get("sha256"):
+        raise ValueError("Package recipe fingerprint differs from complete source inventory")
+    return inputs
+
+
 def verify_runtime_sdk(sdk_root):
     root = Path(sdk_root)
     path = root / MANIFEST
@@ -142,6 +234,7 @@ def verify_runtime_sdk(sdk_root):
     if (producer.get("entrypoint") != "tool/cosmocc/package.sh" or
             producer.get("fresh_outputs") is not True):
         raise ValueError("SDK did not record a fresh complete package build")
+    verify_source_inputs(root, record)
     if record.get("runtime_identity") != runtime_identity(record):
         raise ValueError("Source runtime manifest identity mismatch")
     if record.get("files") != inventory(root, exclude=(MANIFEST,)):
