@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from file_metadata import STAMP, tree_sha256
 from runtime_identity import (SOURCE_INPUTS, read_json, required_files,
                               source_inventory_sha256, verify_runtime_sdk)
-from source_runtime import (build_runtime_sdk, git, git_bytes, materialize_source,
+from source_runtime import (COMPILER_ARCHIVES, build_runtime_sdk, git, git_bytes,
+                           load_compiler_archives, materialize_source,
                            publish_new_directory, tracked_source_inventory)
 
 
@@ -80,6 +81,8 @@ class SourceInventoryTest(unittest.TestCase):
             recipe.parent.mkdir(parents=True, exist_ok=True)
             recipe.write_bytes(b"#!/bin/sh\nexit 99 # fixture package is mocked\n")
             recipe.chmod(0o755)
+            (self.root / COMPILER_ARCHIVES).write_bytes(
+                (Path(__file__).resolve().parents[2] / COMPILER_ARCHIVES).read_bytes())
         self.git("add", "--all")
         self.git("commit", "--quiet", "-m", "CRLF checkout fixture")
         self.revision = self.git("rev-parse", "HEAD")
@@ -189,6 +192,18 @@ class SourceInventoryTest(unittest.TestCase):
             "schema_version": 1, "cosmocc": pin, "verification": "archive-sha256-checked",
             "tree_sha256": tree_sha256(bootstrap)}))
         output = self.new_output("sdk")
+        archive_cache = self.new_output("compiler-archives")
+        archive_cache.mkdir()
+        archive_pins = load_compiler_archives(raw)
+        for error in ("Compiler archive download failed", "Compiler archive cache checksum/type mismatch"):
+            with patch("source_runtime.load_pins", return_value={"cosmocc": pin}), \
+                    patch("source_runtime.prepare_compiler_archives", side_effect=ValueError(error)), \
+                    patch("source_runtime.materialize_source") as materialize:
+                with self.assertRaisesRegex(ValueError, error):
+                    build_runtime_sdk(raw, bootstrap, output)
+                materialize.assert_not_called()
+            self.assertFalse(output.exists())
+            self.assertEqual(list(output.parent.iterdir()), [])
         original_run = subprocess.run
         packages = []
 
@@ -197,6 +212,7 @@ class SourceInventoryTest(unittest.TestCase):
                 checkout = kwargs["cwd"]
                 self.assertEqual(tracked_source_inventory(checkout, self.revision, self.tree), expected)
                 self.assertEqual((checkout / "build.bat").read_bytes(), b"@echo off\necho source\n")
+                self.assertEqual(kwargs["env"]["COSMO_PACKAGE_ARCHIVE_CACHE"], str(archive_cache))
                 staged = Path(command[2])
                 for name in required_files():
                     path = staged / name
@@ -207,12 +223,14 @@ class SourceInventoryTest(unittest.TestCase):
             return original_run(command, *args, **kwargs)
 
         with patch("source_runtime.load_pins", return_value={"cosmocc": pin}), \
+                patch("source_runtime.prepare_compiler_archives", return_value=(archive_cache, archive_pins)), \
                 patch("source_runtime.subprocess.run", side_effect=run):
             record = build_runtime_sdk(raw, bootstrap, output)
         self.assertEqual(len(packages), 1)
         self.assertEqual(read_json(output / SOURCE_INPUTS)["files"], expected)
         self.assertEqual(verify_runtime_sdk(output), record)
         self.assertEqual(record["source_tree_sha256"], source_inventory_sha256(expected))
+        self.assertEqual(record["producer"]["compiler_archives"], archive_pins)
         self.assertEqual(tracked_source_inventory(raw, self.revision, self.tree), expected)
         self.assertIn(b"\r\n", (ordinary / "build.bat").read_bytes())
 

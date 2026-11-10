@@ -25,6 +25,130 @@ from runtime_identity import (MANIFEST, SOURCE_INPUTS, ARCHITECTURES, digest_fil
                               require_source_path, runtime_identity,
                               source_inventory_sha256, verify_runtime_sdk)
 
+COMPILER_ARCHIVES = "tool/cosmocc/compiler-archives.tsv"
+NETWORK_ENVIRONMENT = (
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
+)
+
+
+def build_environment():
+    """Forward existing network trust/routing, never build override settings.
+
+    Proxy values may contain credentials. Do not log this mapping or persist it
+    in manifests. Lowercase aliases let wget honor uppercase-only proxy setups.
+    """
+    names = ("HOME", "PATH", "SYSTEMROOT") + NETWORK_ENVIRONMENT
+    env = {key: os.environ[key] for key in names if key in os.environ}
+    for upper in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+        if upper in env and upper.lower() not in env:
+            env[upper.lower()] = env[upper]
+    return env
+
+
+def load_compiler_archives(source):
+    path = Path(source) / COMPILER_ARCHIVES
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Missing regular compiler archive pin file")
+    pins = {}
+    for line in path.read_text(encoding="ascii").splitlines():
+        fields = line.split()
+        if len(fields) != 3:
+            raise ValueError("Invalid compiler archive pin row")
+        name, checksum, url = fields
+        if (name not in ("aarch64-gcc.zip", "x86_64-gcc.zip", "llvm.zip") or name in pins or
+                not re.fullmatch(r"[0-9a-f]{64}", checksum) or
+                not re.fullmatch(r"https://github\.com/ahgamut/superconfigure/releases/download/"
+                                 r"[A-Za-z0-9_.-]+/" + re.escape(name), url)):
+            raise ValueError("Invalid or duplicate official compiler archive pin")
+        pins[name] = {"sha256": checksum, "url": url}
+    if set(pins) != {"aarch64-gcc.zip", "x86_64-gcc.zip", "llvm.zip"}:
+        raise ValueError("Compiler archive pins must include both GCC targets and LLVM")
+    return pins
+
+
+def verify_compiler_archive(path, expected):
+    if path.is_symlink() or not path.is_file() or digest_file(path) != expected:
+        raise ValueError(f"Compiler archive cache checksum/type mismatch: {path.name}")
+
+
+def download_compiler_archive(url, destination, env):
+    """Download only the pinned HTTPS asset without exposing proxy/CA values."""
+    curl = shutil.which("curl", path=env.get("PATH", os.defpath))
+    wget = None if curl else shutil.which("wget", path=env.get("PATH", os.defpath))
+    if curl:
+        command = [curl, "--disable", "--fail", "--location", "--silent", "--show-error",
+                   "--proto", "=https", "--proto-redir", "=https", "--retry", "2",
+                   "--connect-timeout", "30", "--max-time", "1800",
+                   "--output", str(destination), url]
+        env = dict(env)
+        if "CURL_CA_BUNDLE" not in env and "REQUESTS_CA_BUNDLE" in env:
+            env["CURL_CA_BUNDLE"] = env["REQUESTS_CA_BUNDLE"]
+    elif wget:
+        command = [wget, "--no-config", "--https-only", "--timeout=30", "--tries=3",
+                   "--output-document", str(destination)]
+        certificate = next((env[key] for key in ("CURL_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE")
+                            if env.get(key)), None)
+        if certificate:
+            command += ["--ca-certificate", certificate]
+        if env.get("SSL_CERT_DIR"):
+            command += ["--ca-directory", env["SSL_CERT_DIR"]]
+        command.append(url)
+    else:
+        raise ValueError("Compiler archive preflight requires curl or wget")
+    try:
+        # Downloaders can echo proxy URLs or certificate paths on failure. Keep
+        # their output private and report only the public pinned asset name.
+        result = subprocess.run(command, env=env, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE, timeout=1900, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        raise ValueError(f"Compiler archive download failed: {url.rsplit('/', 1)[-1]}") from None
+    if result.returncode:
+        raise ValueError(f"Compiler archive download failed: {url.rsplit('/', 1)[-1]}; "
+                         "check the existing proxy/network/CA configuration")
+
+
+def prepare_compiler_archives(source, cache_root, env, allow_download=True):
+    """Populate a persistent, checksum-verified cache before any compilation.
+
+    Existing entries are verified, never replaced or silently redownloaded.
+    Each download is published only after SHA256 verification, with an atomic
+    non-replacing hardlink. Partial downloads disappear; verified ones survive.
+    """
+    pins = load_compiler_archives(source)
+    cache_root = Path(cache_root).absolute()
+    if cache_root.is_symlink() or cache_root.resolve() != cache_root:
+        raise ValueError("Compiler archive cache requires a path without directory aliases")
+    cache = cache_root
+    if not allow_download:
+        if not cache.is_dir():
+            raise ValueError("Explicit compiler archive cache must already exist")
+        for name, pin in pins.items():
+            verify_compiler_archive(cache / name, pin["sha256"])
+        return cache, pins
+    cache.mkdir(parents=True, exist_ok=True)
+    # Reject every corrupt existing entry before starting any network request.
+    for name, pin in pins.items():
+        path = cache / name
+        if path.exists() or path.is_symlink():
+            verify_compiler_archive(path, pin["sha256"])
+    for name, pin in pins.items():
+        path = cache / name
+        if not path.exists():
+            with tempfile.TemporaryDirectory(prefix=".download-", dir=cache) as temporary:
+                downloaded = Path(temporary) / name
+                download_compiler_archive(pin["url"], downloaded, env)
+                verify_compiler_archive(downloaded, pin["sha256"])
+                try:
+                    os.link(downloaded, path, follow_symlinks=False)
+                except FileExistsError:
+                    # A concurrent producer may publish the same pinned bytes.
+                    # Verify it rather than replacing anything already present.
+                    verify_compiler_archive(path, pin["sha256"])
+        verify_compiler_archive(path, pin["sha256"])
+    return cache, pins
+
 
 def git_environment():
     # Pin operations to the selected repository, not an inherited worktree,
@@ -274,7 +398,7 @@ def source_features(root):
     return result
 
 
-def build_runtime_sdk(source, bootstrap_sdk, output, jobs=1):
+def build_runtime_sdk(source, bootstrap_sdk, output, jobs=1, compiler_cache=None):
     if type(jobs) is not int or jobs < 1:
         raise ValueError("jobs must be a positive integer")
     source = Path(source).resolve(strict=True)
@@ -283,6 +407,12 @@ def build_runtime_sdk(source, bootstrap_sdk, output, jobs=1):
     require_new(output)
     if output.resolve().is_relative_to(source):
         raise ValueError("SDK output must be outside the source checkout")
+    allow_archive_download = compiler_cache is None
+    compiler_cache = (Path(compiler_cache).absolute() if compiler_cache is not None else
+                      output.parent / ".source-runtime-compiler-cache")
+    if any(compiler_cache.resolve().is_relative_to(path.resolve())
+           for path in (source, bootstrap_sdk, output)):
+        raise ValueError("Compiler archive cache must be outside source, bootstrap and output trees")
     revision = git(source, "rev-parse", "HEAD")
     tree = git(source, "rev-parse", "HEAD^{tree}")
     # Git status normalizes text and can invoke external clean filters. Require
@@ -307,6 +437,9 @@ def build_runtime_sdk(source, bootstrap_sdk, output, jobs=1):
             metadata.get("tree_sha256") != bootstrap_hash or
             (bootstrap_sdk / MANIFEST).exists()):
         raise ValueError("Stock bootstrap compiler identity does not match source pins")
+    env = build_environment()
+    archive_cache, archive_pins = prepare_compiler_archives(source, compiler_cache, env,
+                                                          allow_download=allow_archive_download)
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="source-runtime-", dir=output.parent) as temporary:
         temporary = Path(temporary)
@@ -320,6 +453,8 @@ def build_runtime_sdk(source, bootstrap_sdk, output, jobs=1):
             raise ValueError("Materialized source differs from the selected committed bytes")
         if load_pins(checkout)["cosmocc"] != pins:
             raise ValueError("Source bootstrap pins differ from the pinned checkout")
+        if load_compiler_archives(checkout) != archive_pins:
+            raise ValueError("Compiler archive pins differ from the pinned checkout")
         features = source_features(checkout)
         bootstrap_copy = checkout / ".cosmocc" / pins["version"]
         shutil.copytree(bootstrap_sdk, bootstrap_copy, symlinks=True)
@@ -330,8 +465,8 @@ def build_runtime_sdk(source, bootstrap_sdk, output, jobs=1):
         require_new(staged)
         # Never inherit MAKEFLAGS, CC/CXX, COSMOCC, CPATH, LIBRARY_PATH or
         # runtime profile overrides. System build utilities remain host inputs.
-        env = {key: os.environ[key] for key in ("HOME", "PATH", "SYSTEMROOT") if key in os.environ}
         env.update(COSMO_PACKAGE_JOBS=str(jobs), LC_ALL="C", TMPDIR=str(temporary))
+        env["COSMO_PACKAGE_ARCHIVE_CACHE"] = str(archive_cache)
         subprocess.run(["sh", "tool/cosmocc/package.sh", str(staged)],
                        cwd=checkout, env=env, check=True)
         if tree_sha256(bootstrap_copy) != bootstrap_hash:
@@ -360,6 +495,7 @@ def build_runtime_sdk(source, bootstrap_sdk, output, jobs=1):
             "producer": {"entrypoint": "tool/cosmocc/package.sh",
                          "sha256": source_files["tool/cosmocc/package.sh"]["sha256"],
                          "jobs": jobs, "fresh_outputs": True,
+                         "compiler_archives": archive_pins,
                          "compiler_distribution": "package.sh checksum-pinned GCC and LLVM archives"},
             "scope": "Local input/content identity, not signed provenance or reproducible-build proof. "
                      "Host build tools are not pinned. All runtime variants come from the same source tree.",
@@ -387,6 +523,8 @@ def main():
     build.add_argument("--bootstrap-sdk", type=Path, required=True)
     build.add_argument("--output", type=Path, required=True)
     build.add_argument("--jobs", type=int, default=1)
+    build.add_argument("--compiler-cache", type=Path,
+                       help="Existing verified archive directory (offline); default preflights/downloads into output parent's .source-runtime-compiler-cache")
     args = parser.parse_args()
     try:
         if args.command == "verify":
@@ -394,7 +532,8 @@ def main():
         elif args.command == "materialize":
             record = materialize_source(args.source, args.output, args.revision)
         else:
-            record = build_runtime_sdk(args.source, args.bootstrap_sdk, args.output, args.jobs)
+            record = build_runtime_sdk(args.source, args.bootstrap_sdk, args.output, args.jobs,
+                                       args.compiler_cache)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"source runtime: {error}\n")
     print(json.dumps(record, sort_keys=True))

@@ -58,6 +58,48 @@ committed and byte-exact, with no submodules or nonignored untracked files. The
 SDK build starts without reused object files. The full package
 build is expensive. It runs build tools but does not run application probes.
 
+## Compiler archive preflight
+
+The exact three official `z0.0.60` compiler archive URLs and SHA256 values are
+shared by Python and the shell packager in `tool/cosmocc/compiler-archives.tsv`.
+They supply compiler support files, never replacement runtime libraries.
+Before creating the temporary build or running make, `source_runtime.py` verifies
+all three archives. Without an explicit cache option it downloads missing files
+into the persistent `.source-runtime-compiler-cache` beside the SDK output.
+Successful verified downloads survive later failures; partial downloads are
+removed. A corrupt existing archive is rejected, not overwritten or silently
+redownloaded. No archive version substitution or stock-runtime fallback exists.
+
+For an already populated external cache, use the offline path:
+
+```sh
+python3 toolchain/source_runtime.py build \
+  --source /absolute/new-foundation-source \
+  --bootstrap-sdk /absolute/verified-stock-sdk \
+  --compiler-cache /absolute/verified-compiler-archives \
+  --output /absolute/new-source-sdk --jobs 1
+```
+
+The explicit cache must contain regular `aarch64-gcc.zip`, `x86_64-gcc.zip` and
+`llvm.zip` files matching the committed pins. Missing or mismatched files fail
+before compilation, without any network fallback. Cache directories must be
+outside the source, bootstrap and SDK output trees. Cached files are never
+replaced. Both modes pass a verified cache to `package.sh`, which checks it
+before its first make and again when copying archives for extraction. The
+cache path is not written into SDK provenance; public archive URLs and hashes
+are recorded under `producer.compiler_archives`.
+
+Only existing proxy settings (`http_proxy`, `https_proxy`, `all_proxy`,
+`no_proxy`, and their uppercase forms) and CA settings (`SSL_CERT_FILE`,
+`SSL_CERT_DIR`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`) are forwarded alongside
+the existing base build environment. Values are not printed or saved. Downloader
+diagnostics are suppressed because they can expose proxy credentials; failures
+identify only the public archive. No proxy, certificate, global Git or system
+configuration is changed. Compiler overrides and runtime-profile overrides
+remain excluded. Direct `package.sh` callers still need no Python and retain
+the existing late download behavior unless they explicitly set
+`COSMO_PACKAGE_ARCHIVE_CACHE` to an absolute verified cache directory.
+
 ## Identity and compatibility
 
 `SOURCE_RUNTIME.json` records source repository/commit/tree, reviewed ABI input

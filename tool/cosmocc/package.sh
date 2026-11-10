@@ -42,6 +42,97 @@ else
 fi
 GCCVER=14.1.0
 
+# One declarative pin source is also consumed by toolchain/source_runtime.py.
+# Direct callers need only POSIX shell and the original download/hash tools.
+COMPILER_SOURCE_ROOT=$PWD
+COMPILER_ARCHIVES=$PWD/tool/cosmocc/compiler-archives.tsv
+ARM64_COMPILER_URL=
+AMD64_COMPILER_URL=
+LLVM_COMPILER_URL=
+archive_count=0
+while read -r archive checksum url extra || [ -n "$archive$checksum$url$extra" ]; do
+  if [ -n "$extra" ] || [ "${#checksum}" -ne 64 ]; then
+    echo 'Invalid compiler archive pin row' >&2
+    exit 1
+  fi
+  case "$checksum" in *[!0-9a-f]*) echo 'Invalid compiler archive SHA256' >&2; exit 1 ;; esac
+  case "$url" in
+    https://github.com/ahgamut/superconfigure/releases/download/*/"$archive") ;;
+    *) echo 'Invalid official compiler archive URL' >&2; exit 1 ;;
+  esac
+  release=${url#https://github.com/ahgamut/superconfigure/releases/download/}
+  release=${release%/"$archive"}
+  case "$release" in
+    ''|*[!A-Za-z0-9_.-]*) echo 'Invalid compiler archive release tag' >&2; exit 1 ;;
+  esac
+  case "$archive" in
+    aarch64-gcc.zip)
+      [ -z "$ARM64_COMPILER_URL" ] || exit 1
+      ARM64_COMPILER_URL=$url; ARM64_COMPILER_SHA256=$checksum ;;
+    x86_64-gcc.zip)
+      [ -z "$AMD64_COMPILER_URL" ] || exit 1
+      AMD64_COMPILER_URL=$url; AMD64_COMPILER_SHA256=$checksum ;;
+    llvm.zip)
+      [ -z "$LLVM_COMPILER_URL" ] || exit 1
+      LLVM_COMPILER_URL=$url; LLVM_COMPILER_SHA256=$checksum ;;
+    *) echo 'Unknown compiler archive' >&2; exit 1 ;;
+  esac
+  archive_count=$((archive_count + 1))
+done < "$COMPILER_ARCHIVES"
+[ "$archive_count" -eq 3 ] || { echo 'Missing compiler archive pins' >&2; exit 1; }
+
+setup_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    true
+  elif command -v shasum >/dev/null 2>&1; then
+    sha256sum() { shasum -a 256 "$@"; }
+  elif command -v "$COMPILER_SOURCE_ROOT/o/build/sha256sum" >/dev/null 2>&1; then
+    sha256sum() { "$COMPILER_SOURCE_ROOT/o/build/sha256sum" "$@"; }
+  else
+    echo please install sha256sum >&2
+    exit 1
+  fi
+}
+
+verify_archive() {
+  if [ ! -f "$1" ] || [ -L "$1" ]; then
+    echo 'Compiler archive must be a regular file' >&2
+    exit 1
+  fi
+  printf '%s\n' "$2  $1" | sha256sum -c - || exit 1
+}
+
+fetch() {
+  filename=$(basename "$1")
+  if [ "${COSMO_PACKAGE_ARCHIVE_CACHE+x}" = x ]; then
+    # Cache mode never falls back to the network, even if files disappear.
+    verify_archive "$COSMO_PACKAGE_ARCHIVE_CACHE/$filename" "$2"
+    cp "$COSMO_PACKAGE_ARCHIVE_CACHE/$filename" "$filename"
+  elif command -v wget >/dev/null; then
+    wget "$1"
+  else
+    curl -LO "$1"
+  fi
+  setup_sha256
+  verify_archive "$filename" "$2"
+}
+
+# Fail before the first make if any explicitly provided cached input is wrong.
+if [ "${COSMO_PACKAGE_ARCHIVE_CACHE+x}" = x ]; then
+  case "$COSMO_PACKAGE_ARCHIVE_CACHE" in
+    /*) ;;
+    *) echo 'Compiler archive cache must be an absolute directory' >&2; exit 1 ;;
+  esac
+  if [ ! -d "$COSMO_PACKAGE_ARCHIVE_CACHE" ] || [ -L "$COSMO_PACKAGE_ARCHIVE_CACHE" ]; then
+    echo 'Compiler archive cache must be an ordinary directory' >&2
+    exit 1
+  fi
+  setup_sha256
+  verify_archive "$COSMO_PACKAGE_ARCHIVE_CACHE/aarch64-gcc.zip" "$ARM64_COMPILER_SHA256"
+  verify_archive "$COSMO_PACKAGE_ARCHIVE_CACHE/x86_64-gcc.zip" "$AMD64_COMPILER_SHA256"
+  verify_archive "$COSMO_PACKAGE_ARCHIVE_CACHE/llvm.zip" "$LLVM_COMPILER_SHA256"
+fi
+
 if ! MAKE=$(command -v gmake); then
   if ! MAKE=$(command -v make); then
     echo please install gnu make >&2
@@ -260,45 +351,14 @@ for x in $(cat o/cosmocc.h.txt); do
   cp -f $x "$OUTDIR/include/${x%/*}/"
 done
 
-fetch() {
-  if command -v wget >/dev/null; then
-    wget $1
-  else
-    curl -LO $1
-  fi
-
-  if command -v sha256sum >/dev/null 2>&1; then
-    # can use system sha256sum
-    true
-  elif command -v shasum >/dev/null 2>&1; then
-    sha256sum() {
-      shasum -a 256 "$@"
-    }
-  elif command -v "$PWD/o/build/sha256sum" >/dev/null 2>&1; then
-    # should have been built by download-cosmocc.sh if a system
-    # sha256sum/shasum does not exist
-    sha256sum() {
-      "$PWD/o/build/sha256sum" "$@"
-    }
-  else
-    echo please install sha256sum >&2
-    exit 1
-  fi
-
-  filename=$(basename $1)
-  printf '%s\n' "$2 $filename" >$filename.sha256sum
-  sha256sum -c $filename.sha256sum || exit 1
-  rm -f $filename.sha256sum
-}
-
 OLD=$PWD
 cd "$OUTDIR/"
 if [ ! -x bin/x86_64-linux-cosmo-gcc ]; then
-  fetch https://github.com/ahgamut/superconfigure/releases/download/z0.0.60/aarch64-gcc.zip 6a07f915ec0296cd33b3142e75c00ed1a7072c75d92c82a0c0b5f5df2cff0dd2 &
+  fetch "$ARM64_COMPILER_URL" "$ARM64_COMPILER_SHA256" &
   fetch_arm64_pid=$!
-  fetch https://github.com/ahgamut/superconfigure/releases/download/z0.0.60/x86_64-gcc.zip cbb1659c56a0a4f95a71f59f94693515000d3dd53f79a597acacd53cbad2c7d8 &
+  fetch "$AMD64_COMPILER_URL" "$AMD64_COMPILER_SHA256" &
   fetch_amd64_pid=$!
-  fetch https://github.com/ahgamut/superconfigure/releases/download/z0.0.60/llvm.zip d42c2e46204d4332975d2d7464c5df63c898c34f8d9d2b83c168c14705ca8edd &
+  fetch "$LLVM_COMPILER_URL" "$LLVM_COMPILER_SHA256" &
   fetch_llvm_pid=$!
   fetch_status=0
   wait "$fetch_arm64_pid" || fetch_status=1
