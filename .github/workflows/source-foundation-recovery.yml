@@ -1,0 +1,42 @@
+name: Rebuild verified source foundation
+on:
+  push:
+    branches: [ci/source-foundation-20261112]
+    paths: ['.github/source-foundation/**', '.github/workflows/source-foundation-recovery.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: source-foundation-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  foundation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install standard build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bison build-essential ca-certificates clang cmake curl file flex git libclang-dev ninja-build patch pkg-config python3 python3-venv unzip zip
+      - name: Rebuild exact source runtime and complete application-patched export
+        run: bash .github/source-foundation/build.sh
+      - name: Preserve verified foundation export
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: source-foundation-5b25a745
+          path: ci-artifact/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Preserve diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: source-foundation-diagnostics
+          path: ci-results/
+          if-no-files-found: ignore
+          retention-days: 7
